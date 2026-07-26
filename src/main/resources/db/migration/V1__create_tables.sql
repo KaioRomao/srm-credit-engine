@@ -97,7 +97,7 @@ CREATE TABLE liquidacao (
     cambio_id           BIGINT        NULL,
     vl_liquidado        DECIMAL(19,4) NULL,
     vl_cambio_aplicado  DECIMAL(19,6) NULL,
-    status              VARCHAR(20)   NOT NULL,
+    st_liquidacao       VARCHAR(20)   NOT NULL,
     ds_observacao       VARCHAR(500)  NULL,
     dt_criacao          DATETIME      NOT NULL,
     dt_liquidacao       DATETIME      NULL,
@@ -105,7 +105,7 @@ CREATE TABLE liquidacao (
     CONSTRAINT pk_liquidacao PRIMARY KEY (id),
     CONSTRAINT uq_liquidacao_track_id     UNIQUE (track_id),
     CONSTRAINT uq_liquidacao_precificacao UNIQUE (precificacao_id),
-    CONSTRAINT chk_liquidacao_status CHECK (status IN ('PENDENTE','PROCESSANDO','LIQUIDADA','FALHA','CANCELADA')),
+    CONSTRAINT chk_liquidacao_status CHECK (st_liquidacao IN ('PENDENTE','PROCESSANDO','LIQUIDADA','FALHA','CANCELADA')),
     CONSTRAINT fk_liquidacao_precificacao FOREIGN KEY (precificacao_id)     REFERENCES precificacao (id),
     CONSTRAINT fk_liquidacao_cedente      FOREIGN KEY (cedente_id)          REFERENCES cedente (id),
     CONSTRAINT fk_liquidacao_moeda        FOREIGN KEY (moeda_liquidacao_id) REFERENCES moeda (id),
@@ -114,6 +114,6 @@ CREATE TABLE liquidacao (
 
 CREATE INDEX idx_liquidacao_cedente_data ON liquidacao (cedente_id, dt_liquidacao);
 CREATE INDEX idx_liquidacao_dt_liquidacao ON liquidacao (dt_liquidacao);
-CREATE INDEX idx_liquidacao_status ON liquidacao (status);
+CREATE INDEX idx_liquidacao_status ON liquidacao (st_liquidacao);
 CREATE INDEX idx_liquidacao_moeda ON liquidacao (moeda_liquidacao_id);
 CREATE INDEX idx_liquidacao_cambio ON liquidacao (cambio_id);

@@ -7,6 +7,7 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import jakarta.validation.constraints.NotBlank;
+
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -36,5 +37,4 @@ public class Moeda {
     @Column(name = "ds_simbolo")
     @NotBlank(message = "ds_simbolo obrigatório")
     private String dsSimbolo;
-
 }

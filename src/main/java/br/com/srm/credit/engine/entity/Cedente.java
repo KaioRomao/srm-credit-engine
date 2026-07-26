@@ -7,6 +7,9 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import jakarta.validation.constraints.NotBlank;
+
+import org.hibernate.validator.constraints.br.CNPJ;
+
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -31,5 +34,6 @@ public class Cedente {
 
     @Column(name = "nr_documento", length = 14, unique = true)
     @NotBlank(message = "nr_documento obrigatório")
+    @CNPJ
     private String nrDocumento;
 }

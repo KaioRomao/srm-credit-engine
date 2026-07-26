@@ -1,6 +1,9 @@
 package br.com.srm.credit.engine.entity;
 
-import br.com.srm.credit.engine.enums.StatusLiquidacao;
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.UUID;
+
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -15,14 +18,16 @@ import jakarta.persistence.OneToOne;
 import jakarta.persistence.Table;
 import jakarta.persistence.Version;
 import jakarta.validation.constraints.NotNull;
+
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
+
+import br.com.srm.credit.engine.enums.StatusLiquidacao;
+
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
-
-import java.math.BigDecimal;
-import java.time.LocalDateTime;
-import java.util.UUID;
 
 @Entity
 @Table(name = "liquidacao")
@@ -41,6 +46,7 @@ public class Liquidacao {
     @Column(name = "version")
     private Long version;
 
+    @JdbcTypeCode(SqlTypes.VARCHAR)
     @Column(name = "track_id", length = 36, nullable = false, updatable = false, unique = true)
     @NotNull(message = "track_id obrigatório")
     private UUID trackId;

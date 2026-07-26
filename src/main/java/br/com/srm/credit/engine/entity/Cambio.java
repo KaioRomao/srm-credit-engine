@@ -1,5 +1,8 @@
 package br.com.srm.credit.engine.entity;
 
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.FetchType;
@@ -10,13 +13,11 @@ import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 import jakarta.validation.constraints.NotNull;
+
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
-
-import java.math.BigDecimal;
-import java.time.LocalDateTime;
 
 @Entity
 @Table(name = "cambio")
@@ -46,5 +47,4 @@ public class Cambio {
     @Column(name = "dt_fechamento")
     @NotNull(message = "dt_fechamento obrigatória")
     private LocalDateTime dtFechamento;
-
 }
