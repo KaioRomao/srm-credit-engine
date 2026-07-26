@@ -1,0 +1,50 @@
+# Git hooks do SRM Credit Engine.
+#
+# Instalacao:
+#   pip install pre-commit
+#   pre-commit install --hook-type pre-commit --hook-type pre-push
+#
+# Os hooks usam o Maven wrapper do proprio repositorio (./mvnw), portanto nao
+# dependem de Maven instalado na maquina.
+
+default_install_hook_types: [pre-commit, pre-push]
+fail_fast: false
+
+repos:
+  - repo: local
+    hooks:
+      # ---------- pre-commit ----------
+      # Formata SOMENTE os arquivos staged. Formatar o projeto inteiro conflitaria
+      # com o stash que o pre-commit faz do trabalho nao-staged.
+      - id: spotless-apply
+        name: Spotless — formata os arquivos Java alterados
+        entry: scripts/spotless-staged.sh
+        language: script
+        types: [java]
+        stages: [pre-commit]
+
+      # ---------- pre-push ----------
+      # Somente os testes unitarios (surefire, *Test.java). Os de integracao
+      # exigem MySQL e RabbitMQ no ar e ficam para o CI — seriam lentos demais
+      # e falhariam em maquina sem a infraestrutura subida.
+      - id: testes-unitarios
+        name: Maven — testes unitarios
+        entry: ./mvnw -B test
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: \.postman_(collection|environment)\.json$
+      - id: end-of-file-fixer
+        exclude: \.postman_(collection|environment)\.json$
+      - id: check-yaml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+      - id: no-commit-to-branch
+        args: [--branch, main]
