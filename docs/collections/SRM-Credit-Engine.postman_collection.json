@@ -1,0 +1,2339 @@
+{
+  "info": {
+    "_postman_id": "srm-credit-engine",
+    "name": "SRM Credit Engine",
+    "description": "Collection da API do SRM Credit Engine. Documentacao completa, sequencia de execucao e lista de endpoints nao implementados em docs/colletions/README.md.\n\nSuba a infraestrutura com 'docker-compose up -d', selecione o environment 'SRM - Local' e rode a collection inteira pelo Collection Runner. As requisicoes se encadeiam por variaveis de colecao, sem copiar id manualmente.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "00 - Diagnostico",
+      "description": "A aplicacao NAO expoe Spring Boot Actuator, portanto nao ha /health, /readiness nem /liveness. Enquanto o Actuator nao existir, o endpoint de OpenAPI e o sinal de vida mais confiavel: se ele responde 200, o contexto Spring subiu por completo (controllers, beans, datasource).",
+      "item": [
+        {
+          "name": "Sinal de vida - OpenAPI",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{host}}/v3/api-docs",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v3",
+                "api-docs"
+              ]
+            },
+            "description": "Substituto do health check enquanto o Actuator nao existe.\n\n200 significa contexto Spring iniciado com sucesso.\nConnection refused significa aplicacao fora do ar."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Especificacao OpenAPI 3.1\", () => {",
+                  "    pm.expect(pm.response.json().openapi).to.eql(\"3.1.0\");",
+                  "});",
+                  "pm.test(\"As 7 rotas estao publicadas\", () => {",
+                  "    const paths = Object.keys(pm.response.json().paths);",
+                  "    pm.expect(paths).to.include.members([",
+                  "        \"/api/v1/precificacoes/simular\",",
+                  "        \"/api/v1/cambios/sincronizar\",",
+                  "        \"/api/v1/cambios\",",
+                  "        \"/api/v1/lotes\",",
+                  "        \"/api/v1/liquidacoes\",",
+                  "        \"/api/v1/liquidacoes/{id}\",",
+                  "        \"/api/v1/liquidacoes/extrato\"",
+                  "    ]);",
+                  "});",
+                  "pm.test(\"Schema de erro ErroRS registrado\", () => {",
+                  "    pm.expect(pm.response.json().components.schemas).to.have.property(\"ErroRS\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Swagger UI",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{host}}/swagger-ui/index.html",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "swagger-ui",
+                "index.html"
+              ]
+            },
+            "description": "Interface navegavel gerada a partir das anotacoes do codigo."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "01 - Cambio",
+      "description": "Cotacoes via API Frankfurter.\n\nPRE-REQUISITO do fluxo cross-currency: sem cotacao sincronizada, precificacao e liquidacao entre moedas diferentes retornam 422.\n\nO endpoint de sincronizacao e IDEMPOTENTE por par + data (upsert). Executar varias vezes atualiza a mesma linha em vez de duplicar - comportamento garantido pela constraint UNIQUE(moeda_origem_id, moeda_destino_id, dt_fechamento) da migration V3.",
+      "item": [
+        {
+          "name": "Sincronizar cotacao BRL para USD",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/cambios/sincronizar?data={{dataCotacao}}&sgMoedaCambioOrigem=BRL&sgMoedaCambioDestino=USD",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "cambios",
+                "sincronizar"
+              ],
+              "query": [
+                {
+                  "key": "data",
+                  "value": "{{dataCotacao}}"
+                },
+                {
+                  "key": "sgMoedaCambioOrigem",
+                  "value": "BRL"
+                },
+                {
+                  "key": "sgMoedaCambioDestino",
+                  "value": "USD"
+                }
+              ]
+            },
+            "description": "Busca a cotacao na Frankfurter e persiste.\n\nPARAMETROS\n- data (obrigatorio, ISO yyyy-MM-dd): data de fechamento desejada. Fim de semana ou feriado faz a API devolver a ultima cotacao disponivel, e o sistema grava com a data REAL retornada.\n- sgMoedaCambioOrigem (obrigatorio): sigla cadastrada na tabela moeda.\n- sgMoedaCambioDestino (obrigatorio): idem. Note o S maiusculo - inconsistencia real do contrato.\n\nRETORNOS\n- 201 Created: CotacaoRS com id, siglas, vlCambio e dtFechamento.\n- 400: parametro ausente ou data fora do formato ISO.\n- 422: moeda nao cadastrada, ou Frankfurter sem cotacao para o par."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 201\", () => pm.response.to.have.status(201));",
+                  "pm.test(\"Corpo tem os campos da cotacao\", () => {",
+                  "    const c = pm.response.json();",
+                  "    pm.expect(c).to.have.all.keys(\"id\",\"sgMoedaOrigem\",\"sgMoedaDestino\",\"vlCambio\",\"dtFechamento\");",
+                  "});",
+                  "pm.test(\"Par retornado confere com o solicitado\", () => {",
+                  "    const c = pm.response.json();",
+                  "    pm.expect(c.sgMoedaOrigem).to.eql(\"BRL\");",
+                  "    pm.expect(c.sgMoedaDestino).to.eql(\"USD\");",
+                  "});",
+                  "pm.test(\"Taxa e numero positivo\", () => {",
+                  "    pm.expect(Number(pm.response.json().vlCambio)).to.be.above(0);",
+                  "});",
+                  "pm.collectionVariables.set(\"cotacaoId\", pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Sincronizar novamente - prova de idempotencia",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/cambios/sincronizar?data={{dataCotacao}}&sgMoedaCambioOrigem=BRL&sgMoedaCambioDestino=USD",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "cambios",
+                "sincronizar"
+              ],
+              "query": [
+                {
+                  "key": "data",
+                  "value": "{{dataCotacao}}"
+                },
+                {
+                  "key": "sgMoedaCambioOrigem",
+                  "value": "BRL"
+                },
+                {
+                  "key": "sgMoedaCambioDestino",
+                  "value": "USD"
+                }
+              ]
+            },
+            "description": "Repete a chamada anterior com os MESMOS parametros.\n\nDeve devolver o MESMO id da execucao anterior - upsert, nao insert. Antes da correcao registrada na ADR-009, isso criava linhas duplicadas e quebrava toda a conversao cambial com NonUniqueResultException."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 201\", () => pm.response.to.have.status(201));",
+                  "pm.test(\"Mesmo id da sincronizacao anterior - upsert\", () => {",
+                  "    const anterior = pm.collectionVariables.get(\"cotacaoId\");",
+                  "    pm.expect(String(pm.response.json().id)).to.eql(String(anterior));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Consultar ultima cotacao",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/cambios?origem=BRL&destino=USD",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "cambios"
+              ],
+              "query": [
+                {
+                  "key": "origem",
+                  "value": "BRL"
+                },
+                {
+                  "key": "destino",
+                  "value": "USD"
+                }
+              ]
+            },
+            "description": "Devolve a taxa mais recente do par, por dt_fechamento DESC LIMIT 1.\n\nRETORNOS\n- 200: BigDecimal puro no corpo (nao e objeto JSON).\n- 400: parametro obrigatorio ausente.\n- 422: nenhuma cotacao sincronizada para o par."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Corpo e um numero positivo\", () => {",
+                  "    pm.expect(Number(pm.response.text())).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Consultar taxa inversa USD para BRL",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/cambios?origem=USD&destino=BRL",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "cambios"
+              ],
+              "query": [
+                {
+                  "key": "origem",
+                  "value": "USD"
+                },
+                {
+                  "key": "destino",
+                  "value": "BRL"
+                }
+              ]
+            },
+            "description": "O par USD->BRL nao foi sincronizado explicitamente.\n\nO sistema calcula 1/taxa a partir da cotacao BRL->USD, com 10 casas antes do arredondamento final. Dispensa sincronizar os dois sentidos de cada par."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Taxa inversa e coerente - maior que 1 para USD/BRL\", () => {",
+                  "    pm.expect(Number(pm.response.text())).to.be.above(1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "02 - Lote (intake de recebiveis)",
+      "description": "NAO EXISTE endpoint de recebivel isolado. Recebiveis nascem dentro de POST /lotes, numa unica transacao - decisao de dominio: recebivel sem lote e sem precificacao nao tem significado.\n\nA operacao e TUDO OU NADA. Falha em um item faz rollback do lote inteiro, incluindo o cedente recem-criado e os recebiveis ja gravados.",
+      "item": [
+        {
+          "name": "Criar lote - 1 recebivel BRL",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dsReferencia\": \"Lote {{$timestamp}}\",\n  \"cedenteDocumento\": \"{{cnpjValido}}\",\n  \"cedenteNome\": \"ACME LTDA\",\n  \"vlTaxaBase\": 0.01,\n  \"recebiveis\": [\n    {\n      \"nrTitulo\": \"DUP-{{$randomInt}}\",\n      \"vlFace\": 10000.00,\n      \"dtVencimento\": \"{{dtVencimentoFutura}}\",\n      \"tipoRecebivel\": \"DUPLICATA_MERCANTIL\",\n      \"sgMoeda\": \"BRL\",\n      \"sgMoedaPagamento\": \"BRL\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/lotes",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "lotes"
+              ]
+            },
+            "description": "Caminho feliz.\n\nO QUE ACONTECE\n1. Resolve o cedente por CNPJ - cria se nao existir, reaproveita se existir.\n2. Cria o lote.\n3. Para cada recebivel: resolve moeda e tipo, persiste, e precifica.\n4. A precificacao congela vlSpread, vlTaxaBase e qtPrazoDia - snapshot historico.\n\nCAMPOS\n- dsReferencia (obrigatorio): identificacao comercial do lote.\n- cedenteDocumento (obrigatorio): CNPJ com digito verificador valido - validado por @CNPJ.\n- cedenteNome: usado apenas na CRIACAO. Cedente existente NAO tem o nome atualizado.\n- vlTaxaBase (obrigatorio): custo de capital do momento, congelado em cada precificacao.\n- recebiveis (obrigatorio, nao vazio): vlFace positivo, dtVencimento futura, tipoRecebivel em (DUPLICATA_MERCANTIL, CHEQUE_PRE_DATADO), sgMoeda em (BRL, USD).\n- sgMoedaPagamento: nulo ou vazio significa mesma moeda do titulo.\n\nRETORNOS\n- 201: LoteRS com id e itens precificados.\n- 400: validacao de forma, incluindo CNPJ com DV invalido.\n- 422: tipo ou moeda inexistente, cotacao ausente em cross-currency."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 201\", () => pm.response.to.have.status(201));",
+                  "pm.test(\"Corpo tem a estrutura de LoteRS\", () => {",
+                  "    const l = pm.response.json();",
+                  "    pm.expect(l).to.have.all.keys(\"id\",\"dsReferencia\",\"cedenteNome\",\"cedenteDocumento\",\"dtCriacao\",\"itens\");",
+                  "});",
+                  "pm.test(\"Um item precificado\", () => {",
+                  "    pm.expect(pm.response.json().itens).to.have.lengthOf(1);",
+                  "});",
+                  "pm.test(\"Valor liquido menor que o de face - houve desagio\", () => {",
+                  "    const i = pm.response.json().itens[0];",
+                  "    pm.expect(Number(i.vlLiquido)).to.be.below(Number(i.vlFace));",
+                  "});",
+                  "pm.test(\"Prazo calculado a partir do vencimento\", () => {",
+                  "    pm.expect(pm.response.json().itens[0].qtPrazoDia).to.be.above(0);",
+                  "});",
+                  "",
+                  "pm.collectionVariables.set(\"precificacaoId\", pm.response.json().itens[0].precificacaoId);",
+                  "pm.collectionVariables.set(\"loteId\", pm.response.json().id);",
+                  "console.log(\"precificacaoId encadeado:\", pm.collectionVariables.get(\"precificacaoId\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Criar lote - duplicata e cheque no mesmo lote",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dsReferencia\": \"Lote {{$timestamp}}\",\n  \"cedenteDocumento\": \"{{cnpjValido}}\",\n  \"cedenteNome\": \"ACME LTDA\",\n  \"vlTaxaBase\": 0.01,\n  \"recebiveis\": [\n    {\n      \"nrTitulo\": \"DUP-{{$randomInt}}\",\n      \"vlFace\": 10000.00,\n      \"dtVencimento\": \"{{dtVencimentoFutura}}\",\n      \"tipoRecebivel\": \"DUPLICATA_MERCANTIL\",\n      \"sgMoeda\": \"BRL\",\n      \"sgMoedaPagamento\": \"BRL\"\n    }\n    },\n    {\n      \"nrTitulo\": \"CHQ-{{$randomInt}}\",\n      \"vlFace\": 10000.00,\n      \"dtVencimento\": \"{{dtVencimentoFutura}}\",\n      \"tipoRecebivel\": \"CHEQUE_PRE_DATADO\",\n      \"sgMoeda\": \"BRL\",\n      \"sgMoedaPagamento\": \"BRL\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/lotes",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "lotes"
+              ]
+            },
+            "description": "Dois titulos de MESMO valor de face e MESMO prazo, tipos diferentes.\n\nProva a regra de risco: o cheque pre-datado tem spread de 2,5% a.m. contra 1,5% da duplicata, entao rende MENOS ao cedente. A diferenca e o premio de risco."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 201\", () => pm.response.to.have.status(201));",
+                  "pm.test(\"Dois itens precificados\", () => {",
+                  "    pm.expect(pm.response.json().itens).to.have.lengthOf(2);",
+                  "});",
+                  "pm.test(\"Cheque rende menos que duplicata nos mesmos parametros\", () => {",
+                  "    const itens = pm.response.json().itens;",
+                  "    const dup = itens.find(i => i.nrTitulo.startsWith(\"DUP\"));",
+                  "    const chq = itens.find(i => i.nrTitulo.startsWith(\"CHQ\"));",
+                  "    pm.expect(Number(chq.vlLiquido)).to.be.below(Number(dup.vlLiquido));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Criar lote - cross-currency BRL para USD",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dsReferencia\": \"Lote {{$timestamp}}\",\n  \"cedenteDocumento\": \"{{cnpjValidoSecundario}}\",\n  \"cedenteNome\": \"EXPORTADORA BETA LTDA\",\n  \"vlTaxaBase\": 0.01,\n  \"recebiveis\": [\n    {\n      \"nrTitulo\": \"DUP-{{$randomInt}}\",\n      \"vlFace\": 10000.00,\n      \"dtVencimento\": \"{{dtVencimentoFutura}}\",\n      \"tipoRecebivel\": \"DUPLICATA_MERCANTIL\",\n      \"sgMoeda\": \"BRL\",\n      \"sgMoedaPagamento\": \"USD\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/lotes",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "lotes"
+              ]
+            },
+            "description": "Titulo em BRL com pagamento em USD.\n\nPRE-REQUISITO: executar antes '01 - Cambio > Sincronizar cotacao BRL para USD'. Sem cotacao, retorna 422.\n\nAlem de vlLiquido, o item traz vlConvertido, e a precificacao grava moeda_destino_id."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 201\", () => pm.response.to.have.status(201));",
+                  "pm.test(\"Valor convertido difere do liquido\", () => {",
+                  "    const i = pm.response.json().itens[0];",
+                  "    pm.expect(Number(i.vlConvertido)).to.not.eql(Number(i.vlLiquido));",
+                  "});",
+                  "pm.test(\"Moeda de pagamento e USD\", () => {",
+                  "    pm.expect(pm.response.json().itens[0].sgMoedaPagamento).to.eql(\"USD\");",
+                  "});",
+                  "pm.collectionVariables.set(\"precificacaoIdUsd\", pm.response.json().itens[0].precificacaoId);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "03 - Precificacao",
+      "description": "Calculo do desagio. A formula e VP = VF / (1 + TaxaBase + Spread) ^ (dias/30).\n\nO spread e definido pelo tipo do recebivel e mora na Strategy: duplicata 1,5% a.m., cheque 2,5% a.m.\n\nNAO EXISTE endpoint 'executar precificacao' isolado. A execucao com persistencia acontece dentro de POST /lotes - ver pasta 02.",
+      "item": [
+        {
+          "name": "Simular - duplicata mercantil",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"vlFace\": 10000.00,\n  \"dtVencimento\": \"{{dtVencimentoFutura}}\",\n  \"tipoRecebivel\": \"DUPLICATA_MERCANTIL\",\n  \"sgMoeda\": \"BRL\",\n  \"sgMoedaPagamento\": \"BRL\",\n  \"vlTaxaBase\": 0.01\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/precificacoes/simular",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "precificacoes",
+                "simular"
+              ]
+            },
+            "description": "Simulacao SEM persistencia - nenhum registro e criado.\n\nRETORNOS\n- 200: PrecificacaoRS com vlFace, vlLiquido, vlConvertido, qtPrazoDia, tipo e moedas.\n- 400: validacao de forma.\n- 422: prazo invalido, tipo sem strategy, ou cotacao ausente em cross-currency."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Campos da resposta\", () => {",
+                  "    pm.expect(pm.response.json()).to.have.all.keys(",
+                  "        \"vlFace\",\"vlLiquido\",\"vlConvertido\",\"qtPrazoDia\",\"tipoRecebivel\",\"sgMoeda\",\"sgMoedaPagamento\");",
+                  "});",
+                  "pm.test(\"Houve desagio\", () => {",
+                  "    const p = pm.response.json();",
+                  "    pm.expect(Number(p.vlLiquido)).to.be.below(Number(p.vlFace));",
+                  "});",
+                  "pm.collectionVariables.set(\"vlLiquidoDuplicata\", pm.response.json().vlLiquido);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Simular - cheque pre-datado",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"vlFace\": 10000.00,\n  \"dtVencimento\": \"{{dtVencimentoFutura}}\",\n  \"tipoRecebivel\": \"CHEQUE_PRE_DATADO\",\n  \"sgMoeda\": \"BRL\",\n  \"sgMoedaPagamento\": \"BRL\",\n  \"vlTaxaBase\": 0.01\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/precificacoes/simular",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "precificacoes",
+                "simular"
+              ]
+            },
+            "description": "Mesmos parametros da requisicao anterior, tipo diferente.\n\nO teste compara com o valor guardado pela simulacao de duplicata e exige que o cheque renda menos - o spread maior precisa se refletir no valor."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Cheque rende menos que duplicata - spread maior\", () => {",
+                  "    const duplicata = Number(pm.collectionVariables.get(\"vlLiquidoDuplicata\"));",
+                  "    pm.expect(Number(pm.response.json().vlLiquido)).to.be.below(duplicata);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Simular - cross-currency BRL para USD",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"vlFace\": 20000.00,\n  \"dtVencimento\": \"{{dtVencimentoFutura}}\",\n  \"tipoRecebivel\": \"DUPLICATA_MERCANTIL\",\n  \"sgMoeda\": \"BRL\",\n  \"sgMoedaPagamento\": \"USD\",\n  \"vlTaxaBase\": 0.01\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/precificacoes/simular",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "precificacoes",
+                "simular"
+              ]
+            },
+            "description": "Exige cotacao BRL->USD sincronizada. Devolve vlLiquido em BRL e vlConvertido em USD."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Valor convertido presente e diferente do liquido\", () => {",
+                  "    const p = pm.response.json();",
+                  "    pm.expect(p.vlConvertido).to.not.be.null;",
+                  "    pm.expect(Number(p.vlConvertido)).to.not.eql(Number(p.vlLiquido));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "04 - Liquidacao",
+      "description": "Fluxo ASSINCRONO. O POST responde 202 com status PENDENTE e enfileira; o cambio e a baixa acontecem depois, no consumer. O desfecho e obtido pelo GET /{id}.\n\nIDEMPOTENCIA pelo header TrackId: repetir a mesma chave devolve a liquidacao ja criada, sem duplicar.\n\nGUARD 1:1 - uma precificacao liquida uma unica vez. Segunda tentativa com TrackId diferente retorna 409.\n\nNAO EXISTEM os endpoints de cancelamento nem de historico de liquidacoes. O estado CANCELADA existe na maquina de estados e e respeitado pelo consumer, mas nenhum endpoint o produz.",
+      "item": [
+        {
+          "name": "Solicitar liquidacao",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "TrackId",
+                "value": "{{trackId}}",
+                "description": "Chave de idempotencia (UUID)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"precificacaoId\": {{precificacaoId}},\n  \"sgMoedaLiquidacao\": \"BRL\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/liquidacoes",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "liquidacoes"
+              ]
+            },
+            "description": "Enfileira a liquidacao.\n\nHEADER\n- TrackId (obrigatorio): UUID de idempotencia. O pre-request gera um novo a cada execucao. Para testar replay, fixe o valor.\n\nCORPO\n- precificacaoId (obrigatorio): encadeado da pasta 02.\n- sgMoedaLiquidacao (obrigatorio): moeda do pagamento ao cedente.\n\nRETORNOS\n- 202 Accepted: LiquidacaoRS com status PENDENTE. vlLiquidado, vlCambioAplicado e dtLiquidacao vem NULOS - sao preenchidos pelo consumer.\n- 400: TrackId ausente ou fora do formato UUID.\n- 404: precificacao inexistente.\n- 409: precificacao ja liquidada.\n- 422: moeda inexistente, ou precificacao sem valor liquido."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"trackId\", require(\"uuid\").v4());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 202\", () => pm.response.to.have.status(202));",
+                  "pm.test(\"Status inicial e PENDENTE\", () => {",
+                  "    pm.expect(pm.response.json().status).to.eql(\"PENDENTE\");",
+                  "});",
+                  "pm.test(\"Valores ainda nao preenchidos\", () => {",
+                  "    const l = pm.response.json();",
+                  "    pm.expect(l.vlLiquidado).to.be.null;",
+                  "    pm.expect(l.dtLiquidacao).to.be.null;",
+                  "});",
+                  "pm.test(\"TrackId ecoado confere com o enviado\", () => {",
+                  "    pm.expect(pm.response.json().trackId).to.eql(pm.collectionVariables.get(\"trackId\"));",
+                  "});",
+                  "pm.collectionVariables.set(\"liquidacaoId\", pm.response.json().id);",
+                  "pm.collectionVariables.set(\"trackIdUsado\", pm.collectionVariables.get(\"trackId\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Replay - mesmo TrackId nao duplica",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "TrackId",
+                "value": "{{trackIdUsado}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"precificacaoId\": {{precificacaoId}},\n  \"sgMoedaLiquidacao\": \"BRL\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/liquidacoes",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "liquidacoes"
+              ]
+            },
+            "description": "Reenvia com o MESMO TrackId da requisicao anterior.\n\nSimula retry de rede ou duplo clique do operador. Deve devolver a liquidacao ja existente, com o mesmo id - nao cria outra."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 202\", () => pm.response.to.have.status(202));",
+                  "pm.test(\"Mesmo id da liquidacao original\", () => {",
+                  "    const original = pm.collectionVariables.get(\"liquidacaoId\");",
+                  "    pm.expect(String(pm.response.json().id)).to.eql(String(original));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Consultar desfecho - polling",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/liquidacoes/{{liquidacaoId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "liquidacoes",
+                "{{liquidacaoId}}"
+              ]
+            },
+            "description": "Contrapartida obrigatoria do 202.\n\nO teste faz POLLING automatico: se o status ainda for PENDENTE ou PROCESSANDO, reagenda a propria requisicao ate 10 vezes, com 500ms de intervalo.\n\nESTADOS\n- PENDENTE: na fila.\n- PROCESSANDO: consumer em execucao.\n- LIQUIDADA: concluida, com vlLiquidado, vlCambioAplicado e dtLiquidacao.\n- FALHA: motivo em dsObservacao."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "",
+                  "const liq = pm.response.json();",
+                  "const tentativas = Number(pm.collectionVariables.get(\"tentativasPolling\") || 0);",
+                  "",
+                  "if ((liq.status === \"PENDENTE\" || liq.status === \"PROCESSANDO\") && tentativas < 10) {",
+                  "    pm.collectionVariables.set(\"tentativasPolling\", tentativas + 1);",
+                  "    console.log(`Ainda ${liq.status} - tentativa ${tentativas + 1}/10`);",
+                  "    setTimeout(() => {}, 500);",
+                  "    postman.setNextRequest(\"Consultar desfecho - polling\");",
+                  "} else {",
+                  "    pm.collectionVariables.set(\"tentativasPolling\", 0);",
+                  "    pm.test(\"Chegou a estado terminal\", () => {",
+                  "        pm.expect(liq.status).to.be.oneOf([\"LIQUIDADA\", \"FALHA\", \"CANCELADA\"]);",
+                  "    });",
+                  "    if (liq.status === \"LIQUIDADA\") {",
+                  "        pm.test(\"Valores preenchidos apos liquidar\", () => {",
+                  "            pm.expect(liq.vlLiquidado).to.not.be.null;",
+                  "            pm.expect(liq.vlCambioAplicado).to.not.be.null;",
+                  "            pm.expect(liq.dtLiquidacao).to.not.be.null;",
+                  "        });",
+                  "        pm.test(\"Sem observacao quando bem-sucedida\", () => {",
+                  "            pm.expect(liq.dsObservacao == null).to.be.true;",
+                  "        });",
+                  "    }",
+                  "    if (liq.status === \"FALHA\") {",
+                  "        pm.test(\"Falha traz motivo em dsObservacao\", () => {",
+                  "            pm.expect(liq.dsObservacao).to.be.a(\"string\").and.not.empty;",
+                  "        });",
+                  "    }",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Guard 1:1 - segunda liquidacao da mesma precificacao",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "TrackId",
+                "value": "{{trackId}}",
+                "description": "Chave de idempotencia (UUID)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"precificacaoId\": {{precificacaoId}},\n  \"sgMoedaLiquidacao\": \"BRL\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/liquidacoes",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "liquidacoes"
+              ]
+            },
+            "description": "TrackId NOVO, mesma precificacao ja liquidada.\n\nDeve retornar 409. A protecao tem duas camadas: o guard existsByPrecificacaoId no codigo e a constraint UNIQUE(precificacao_id) no banco - esta ultima e a que resiste a duas requisicoes realmente simultaneas."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"trackId\", require(\"uuid\").v4());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 409\", () => pm.response.to.have.status(409));",
+                  "pm.test(\"Mensagem indica que ja foi liquidada\", () => {",
+                  "    pm.expect(pm.response.json().message).to.include(\"liquidada\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "05 - Extrato",
+      "description": "Relatorio analitico. Arquitetura de 2 camadas - o controller fala direto com o repositorio, sem service, porque nao ha regra de dominio a aplicar (ADR-006).\n\nRetorna SOMENTE liquidacoes LIQUIDADA. Pendente, falha e cancelada nao entram - extrato e relatorio de dinheiro efetivamente liquidado.\n\nNAO EXISTE endpoint de exportacao (CSV/XLSX).",
+      "item": [
+        {
+          "name": "Extrato - sem filtros",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/liquidacoes/extrato?page=0&size=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "liquidacoes",
+                "extrato"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "0"
+                },
+                {
+                  "key": "size",
+                  "value": "20"
+                }
+              ]
+            },
+            "description": "Pagina inicial, ordenacao padrao dtLiquidacao desc.\n\nPAGINACAO\n- page: base zero.\n- size: limitado a 100. Valor maior e reduzido SILENCIOSAMENTE, sem erro.\n- sort: campo,direcao. Multiplos sort sao aceitos."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Estrutura de Page do Spring Data\", () => {",
+                  "    const p = pm.response.json();",
+                  "    [\"content\",\"totalElements\",\"totalPages\",\"size\",\"number\",\"first\",\"last\"]",
+                  "        .forEach(k => pm.expect(p).to.have.property(k));",
+                  "});",
+                  "pm.test(\"Somente status LIQUIDADA no extrato\", () => {",
+                  "    pm.expect(pm.response.json().content).to.be.an(\"array\");",
+                  "});",
+                  "if (pm.response.json().content.length > 0) {",
+                  "    pm.test(\"Item traz o snapshot congelado\", () => {",
+                  "        const i = pm.response.json().content[0];",
+                  "        [\"vlSpread\",\"vlTaxaBase\",\"qtPrazoDia\"].forEach(k => pm.expect(i[k]).to.not.be.null);",
+                  "    });",
+                  "    pm.test(\"Item traz rastreabilidade completa\", () => {",
+                  "        const i = pm.response.json().content[0];",
+                  "        [\"liquidacaoId\",\"trackId\",\"cedenteDocumento\",\"nrTitulo\",\"tipoRecebivel\"]",
+                  "            .forEach(k => pm.expect(i).to.have.property(k));",
+                  "    });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Extrato - por periodo",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/liquidacoes/extrato?dataInicio={{dataInicioMes}}&dataFim={{dataFimMes}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "liquidacoes",
+                "extrato"
+              ],
+              "query": [
+                {
+                  "key": "dataInicio",
+                  "value": "{{dataInicioMes}}"
+                },
+                {
+                  "key": "dataFim",
+                  "value": "{{dataFimMes}}"
+                }
+              ]
+            },
+            "description": "Filtro por dt_liquidacao, INCLUSIVO nas duas pontas.\n\nO limite superior e exclusivo no dia seguinte internamente: dt_liquidacao e DATETIME, entao um <= dataFim descartaria tudo que liquidou depois da meia-noite do ultimo dia.\n\nDatas em ISO yyyy-MM-dd. Outro formato retorna 400 - o @DateTimeFormat fixa o padrao para nao depender do locale do servidor."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Extrato - por cedente e moeda",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/liquidacoes/extrato?cedenteId=1&sgMoeda=BRL",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "liquidacoes",
+                "extrato"
+              ],
+              "query": [
+                {
+                  "key": "cedenteId",
+                  "value": "1"
+                },
+                {
+                  "key": "sgMoeda",
+                  "value": "BRL"
+                }
+              ]
+            },
+            "description": "Filtros combinaveis. sgMoeda e normalizada para maiuscula, entao 'brl' funciona."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Extrato - ordenado por valor",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/liquidacoes/extrato?sort=vlLiquidado,desc&size=5",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "liquidacoes",
+                "extrato"
+              ],
+              "query": [
+                {
+                  "key": "sort",
+                  "value": "vlLiquidado,desc"
+                },
+                {
+                  "key": "size",
+                  "value": "5"
+                }
+              ]
+            },
+            "description": "Ordenacao permitida: dtLiquidacao, vlLiquidado, vlFace, dtVencimento, cedenteNome, sgMoedaLiquidacao. Qualquer outro campo retorna 400.\n\nA whitelist existe porque o parametro sort e concatenado no SQL - aceitar valor livre seria SQL injection."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "if (pm.response.json().content.length > 1) {",
+                  "    pm.test(\"Ordenado por vlLiquidado decrescente\", () => {",
+                  "        const v = pm.response.json().content.map(i => Number(i.vlLiquidado));",
+                  "        pm.expect(v).to.eql([...v].sort((a,b) => b - a));",
+                  "    });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Extrato - size acima do teto",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/liquidacoes/extrato?size=5000",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "liquidacoes",
+                "extrato"
+              ],
+              "query": [
+                {
+                  "key": "size",
+                  "value": "5000"
+                }
+              ]
+            },
+            "description": "O teto de 100 impede varredura da tabela inteira. A reducao e silenciosa - nao ha erro."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Size reduzido para o teto de 100\", () => {",
+                  "    pm.expect(pm.response.json().size).to.eql(100);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "06 - Cenarios Negativos",
+      "description": "Cada requisicao aqui deve FALHAR com um status especifico. Todas verificam o corpo padronizado ErroRS e a ausencia de stacktrace na resposta.\n\nEsta pasta e a rede de seguranca do contrato de erro: se alguem alterar o GlobalExceptionHandler e quebrar um mapeamento, um destes testes acusa.",
+      "item": [
+        {
+          "name": "SETUP - precificacao dedicada aos negativos",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dsReferencia\": \"Setup negativos\",\n  \"cedenteDocumento\": \"{{cnpjValido}}\",\n  \"cedenteNome\": \"ACME LTDA\",\n  \"vlTaxaBase\": 0.01,\n  \"recebiveis\": [\n    {\n      \"nrTitulo\": \"NEG-SETUP-{{$randomInt}}\",\n      \"vlFace\": 5000.00,\n      \"dtVencimento\": \"{{dtVencimentoFutura}}\",\n      \"tipoRecebivel\": \"DUPLICATA_MERCANTIL\",\n      \"sgMoeda\": \"BRL\",\n      \"sgMoedaPagamento\": \"BRL\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/lotes",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "lotes"
+              ]
+            },
+            "description": "Cria uma precificacao NAO LIQUIDADA, usada pelo cenario '422 - moeda de liquidacao inexistente'.\n\nPOR QUE ESTE SETUP EXISTE: aquele cenario precisa chegar na validacao de moeda. Se reutilizar a precificacao da pasta 04 - que ja foi liquidada -, o guard 1:1 dispara ANTES e o retorno vira 409 em vez de 422. A ordem dos guards em iniciaLiquidacao e: replay, precificacao existe, ja liquidada, valor liquido, moeda."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 201\", () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set(\"precificacaoIdNegativo\", pm.response.json().itens[0].precificacaoId);",
+                  "console.log(\"precificacaoIdNegativo:\", pm.collectionVariables.get(\"precificacaoIdNegativo\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "400 - lista de recebiveis vazia",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dsReferencia\": \"Lote vazio\",\n  \"cedenteDocumento\": \"{{cnpjValido}}\",\n  \"cedenteNome\": \"ACME\",\n  \"vlTaxaBase\": 0.01,\n  \"recebiveis\": []\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/lotes",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "lotes"
+              ]
+            },
+            "description": "Viola @NotEmpty. Bean Validation barra antes de abrir transacao."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"Corpo de erro padronizado ErroRS\", () => {",
+                  "    const e = pm.response.json();",
+                  "    [\"timestamp\",\"status\",\"error\",\"message\",\"path\"].forEach(k => pm.expect(e).to.have.property(k));",
+                  "});",
+                  "pm.test(\"Nunca vaza stacktrace\", () => {",
+                  "    pm.expect(pm.response.text()).to.not.include(\"at java.\");",
+                  "    pm.expect(pm.response.text()).to.not.include(\"Exception:\");",
+                  "});",
+                  "pm.test(\"Erro aponta o campo recebiveis\", () => {",
+                  "    pm.expect(pm.response.json().erros[0].campo).to.eql(\"recebiveis\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "400 - CNPJ com digito verificador invalido",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dsReferencia\": \"CNPJ ruim\",\n  \"cedenteDocumento\": \"11222333000144\",\n  \"cedenteNome\": \"ACME\",\n  \"vlTaxaBase\": 0.01,\n  \"recebiveis\": [{\"nrTitulo\":\"D1\",\"vlFace\":1000.00,\"dtVencimento\":\"{{dtVencimentoFutura}}\",\"tipoRecebivel\":\"DUPLICATA_MERCANTIL\",\"sgMoeda\":\"BRL\",\"sgMoedaPagamento\":\"BRL\"}]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/lotes",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "lotes"
+              ]
+            },
+            "description": "O CNPJ tem 14 digitos mas DV invalido. A anotacao @CNPJ valida no flush do Hibernate, e a ConstraintViolationException e traduzida em 400 - nao em 500."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"Corpo de erro padronizado ErroRS\", () => {",
+                  "    const e = pm.response.json();",
+                  "    [\"timestamp\",\"status\",\"error\",\"message\",\"path\"].forEach(k => pm.expect(e).to.have.property(k));",
+                  "});",
+                  "pm.test(\"Nunca vaza stacktrace\", () => {",
+                  "    pm.expect(pm.response.text()).to.not.include(\"at java.\");",
+                  "    pm.expect(pm.response.text()).to.not.include(\"Exception:\");",
+                  "});",
+                  "pm.test(\"Erro aponta nrDocumento\", () => {",
+                  "    pm.expect(pm.response.json().erros[0].campo).to.include(\"nrDocumento\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "400 - campo aninhado invalido com path indexado",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dsReferencia\": \"Item ruim\",\n  \"cedenteDocumento\": \"{{cnpjValido}}\",\n  \"cedenteNome\": \"ACME\",\n  \"vlTaxaBase\": 0.01,\n  \"recebiveis\": [{\"nrTitulo\":\"NEG\",\"vlFace\":-500.00,\"dtVencimento\":\"2020-01-01\",\"tipoRecebivel\":\"DUPLICATA_MERCANTIL\",\"sgMoeda\":\"\",\"sgMoedaPagamento\":\"BRL\"}]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/lotes",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "lotes"
+              ]
+            },
+            "description": "Tres violacoes no mesmo item: vlFace negativo, vencimento no passado, moeda em branco.\n\nA resposta traz os tres erros de uma vez, com path indexado recebiveis[0].campo."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"Corpo de erro padronizado ErroRS\", () => {",
+                  "    const e = pm.response.json();",
+                  "    [\"timestamp\",\"status\",\"error\",\"message\",\"path\"].forEach(k => pm.expect(e).to.have.property(k));",
+                  "});",
+                  "pm.test(\"Nunca vaza stacktrace\", () => {",
+                  "    pm.expect(pm.response.text()).to.not.include(\"at java.\");",
+                  "    pm.expect(pm.response.text()).to.not.include(\"Exception:\");",
+                  "});",
+                  "pm.test(\"Multiplos erros reportados de uma vez\", () => {",
+                  "    pm.expect(pm.response.json().erros.length).to.be.at.least(3);",
+                  "});",
+                  "pm.test(\"Path do campo e indexado\", () => {",
+                  "    const campos = pm.response.json().erros.map(e => e.campo);",
+                  "    pm.expect(campos.some(c => c.startsWith(\"recebiveis[0].\"))).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "400 - JSON malformado",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"dsReferencia\":",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/lotes",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "lotes"
+              ]
+            },
+            "description": "HttpMessageNotReadableException. Erro de forma, nao de conteudo."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"Corpo de erro padronizado ErroRS\", () => {",
+                  "    const e = pm.response.json();",
+                  "    [\"timestamp\",\"status\",\"error\",\"message\",\"path\"].forEach(k => pm.expect(e).to.have.property(k));",
+                  "});",
+                  "pm.test(\"Nunca vaza stacktrace\", () => {",
+                  "    pm.expect(pm.response.text()).to.not.include(\"at java.\");",
+                  "    pm.expect(pm.response.text()).to.not.include(\"Exception:\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "400 - TrackId fora do formato UUID",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "TrackId",
+                "value": "nao-e-uuid"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"precificacaoId\": 1,\n  \"sgMoedaLiquidacao\": \"BRL\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/liquidacoes",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "liquidacoes"
+              ]
+            },
+            "description": "UUID.fromString lanca IllegalArgumentException, mapeada para 400."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"Corpo de erro padronizado ErroRS\", () => {",
+                  "    const e = pm.response.json();",
+                  "    [\"timestamp\",\"status\",\"error\",\"message\",\"path\"].forEach(k => pm.expect(e).to.have.property(k));",
+                  "});",
+                  "pm.test(\"Nunca vaza stacktrace\", () => {",
+                  "    pm.expect(pm.response.text()).to.not.include(\"at java.\");",
+                  "    pm.expect(pm.response.text()).to.not.include(\"Exception:\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "400 - header TrackId ausente",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"precificacaoId\": 1,\n  \"sgMoedaLiquidacao\": \"BRL\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/liquidacoes",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "liquidacoes"
+              ]
+            },
+            "description": "MissingRequestHeaderException. O header e obrigatorio para garantir idempotencia."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"Corpo de erro padronizado ErroRS\", () => {",
+                  "    const e = pm.response.json();",
+                  "    [\"timestamp\",\"status\",\"error\",\"message\",\"path\"].forEach(k => pm.expect(e).to.have.property(k));",
+                  "});",
+                  "pm.test(\"Nunca vaza stacktrace\", () => {",
+                  "    pm.expect(pm.response.text()).to.not.include(\"at java.\");",
+                  "    pm.expect(pm.response.text()).to.not.include(\"Exception:\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "400 - data do extrato fora do padrao ISO",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/liquidacoes/extrato?dataInicio=25%2F07%2F2026",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "liquidacoes",
+                "extrato"
+              ],
+              "query": [
+                {
+                  "key": "dataInicio",
+                  "value": "25%2F07%2F2026"
+                }
+              ]
+            },
+            "description": "Formato dd/MM/yyyy nao e aceito.\n\nSem o @DateTimeFormat(ISO.DATE), o Spring aceitaria o formato do LOCALE DA JVM - a mesma requisicao se comportaria diferente em servidor com locale distinto. Bug latente, fechado."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"Corpo de erro padronizado ErroRS\", () => {",
+                  "    const e = pm.response.json();",
+                  "    [\"timestamp\",\"status\",\"error\",\"message\",\"path\"].forEach(k => pm.expect(e).to.have.property(k));",
+                  "});",
+                  "pm.test(\"Nunca vaza stacktrace\", () => {",
+                  "    pm.expect(pm.response.text()).to.not.include(\"at java.\");",
+                  "    pm.expect(pm.response.text()).to.not.include(\"Exception:\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "400 - periodo invertido no extrato",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/liquidacoes/extrato?dataInicio=2026-08-01&dataFim=2026-07-01",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "liquidacoes",
+                "extrato"
+              ],
+              "query": [
+                {
+                  "key": "dataInicio",
+                  "value": "2026-08-01"
+                },
+                {
+                  "key": "dataFim",
+                  "value": "2026-07-01"
+                }
+              ]
+            },
+            "description": "Violacao do @AssertTrue no filtro. Erro de OBJETO, nao de campo - por isso o handler de BindException extrai tambem os globalErrors."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"Corpo de erro padronizado ErroRS\", () => {",
+                  "    const e = pm.response.json();",
+                  "    [\"timestamp\",\"status\",\"error\",\"message\",\"path\"].forEach(k => pm.expect(e).to.have.property(k));",
+                  "});",
+                  "pm.test(\"Nunca vaza stacktrace\", () => {",
+                  "    pm.expect(pm.response.text()).to.not.include(\"at java.\");",
+                  "    pm.expect(pm.response.text()).to.not.include(\"Exception:\");",
+                  "});",
+                  "pm.test(\"Erro identificado como periodoCoerente\", () => {",
+                  "    pm.expect(pm.response.json().erros[0].campo).to.eql(\"periodoCoerente\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "400 - ordenacao fora da whitelist",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/liquidacoes/extrato?sort=dsObservacao,asc",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "liquidacoes",
+                "extrato"
+              ],
+              "query": [
+                {
+                  "key": "sort",
+                  "value": "dsObservacao,asc"
+                }
+              ]
+            },
+            "description": "Campo nao permitido para ordenacao.\n\nDetalhe tecnico: lancar IllegalArgumentException de dentro de um @Repository faria o PersistenceExceptionTranslationInterceptor converte-la em InvalidDataAccessApiUsageException, resultando em 500. Por isso existe FiltroInvalidoException, que atravessa o interceptor intacto."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"Corpo de erro padronizado ErroRS\", () => {",
+                  "    const e = pm.response.json();",
+                  "    [\"timestamp\",\"status\",\"error\",\"message\",\"path\"].forEach(k => pm.expect(e).to.have.property(k));",
+                  "});",
+                  "pm.test(\"Nunca vaza stacktrace\", () => {",
+                  "    pm.expect(pm.response.text()).to.not.include(\"at java.\");",
+                  "    pm.expect(pm.response.text()).to.not.include(\"Exception:\");",
+                  "});",
+                  "pm.test(\"Mensagem lista os campos permitidos\", () => {",
+                  "    pm.expect(pm.response.json().message).to.include(\"dsObservacao\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "400 - tentativa de SQL injection pelo sort",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/liquidacoes/extrato?sort=vl_liquidado%3B%20DROP%20TABLE%20liquidacao%2Cdesc",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "liquidacoes",
+                "extrato"
+              ],
+              "query": [
+                {
+                  "key": "sort",
+                  "value": "vl_liquidado%3B%20DROP%20TABLE%20liquidacao%2Cdesc"
+                }
+              ]
+            },
+            "description": "O parametro sort e o UNICO trecho concatenado no SQL do extrato. A whitelist de ordenacao e o que impede injecao.\n\nResultado esperado: 400, e a tabela intacta."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"Corpo de erro padronizado ErroRS\", () => {",
+                  "    const e = pm.response.json();",
+                  "    [\"timestamp\",\"status\",\"error\",\"message\",\"path\"].forEach(k => pm.expect(e).to.have.property(k));",
+                  "});",
+                  "pm.test(\"Nunca vaza stacktrace\", () => {",
+                  "    pm.expect(pm.response.text()).to.not.include(\"at java.\");",
+                  "    pm.expect(pm.response.text()).to.not.include(\"Exception:\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "404 - precificacao inexistente",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "TrackId",
+                "value": "{{$guid}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"precificacaoId\": 999999999,\n  \"sgMoedaLiquidacao\": \"BRL\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/liquidacoes",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "liquidacoes"
+              ]
+            },
+            "description": "RecursoNaoEncontradoException. Antes da criacao dessa excecao dedicada, o caso retornava 422 - status semanticamente errado."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 404\", () => pm.response.to.have.status(404));",
+                  "pm.test(\"Corpo de erro padronizado ErroRS\", () => {",
+                  "    const e = pm.response.json();",
+                  "    [\"timestamp\",\"status\",\"error\",\"message\",\"path\"].forEach(k => pm.expect(e).to.have.property(k));",
+                  "});",
+                  "pm.test(\"Nunca vaza stacktrace\", () => {",
+                  "    pm.expect(pm.response.text()).to.not.include(\"at java.\");",
+                  "    pm.expect(pm.response.text()).to.not.include(\"Exception:\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "404 - liquidacao inexistente",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/liquidacoes/999999999",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "liquidacoes",
+                "999999999"
+              ]
+            },
+            "description": "Consulta de id que nao existe."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 404\", () => pm.response.to.have.status(404));",
+                  "pm.test(\"Corpo de erro padronizado ErroRS\", () => {",
+                  "    const e = pm.response.json();",
+                  "    [\"timestamp\",\"status\",\"error\",\"message\",\"path\"].forEach(k => pm.expect(e).to.have.property(k));",
+                  "});",
+                  "pm.test(\"Nunca vaza stacktrace\", () => {",
+                  "    pm.expect(pm.response.text()).to.not.include(\"at java.\");",
+                  "    pm.expect(pm.response.text()).to.not.include(\"Exception:\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "400 - id nao numerico na consulta",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/liquidacoes/abc",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "liquidacoes",
+                "abc"
+              ]
+            },
+            "description": "MethodArgumentTypeMismatchException na conversao do path variable."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"Corpo de erro padronizado ErroRS\", () => {",
+                  "    const e = pm.response.json();",
+                  "    [\"timestamp\",\"status\",\"error\",\"message\",\"path\"].forEach(k => pm.expect(e).to.have.property(k));",
+                  "});",
+                  "pm.test(\"Nunca vaza stacktrace\", () => {",
+                  "    pm.expect(pm.response.text()).to.not.include(\"at java.\");",
+                  "    pm.expect(pm.response.text()).to.not.include(\"Exception:\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "405 - metodo nao suportado",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/lotes",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "lotes"
+              ]
+            },
+            "description": "A rota /lotes so aceita POST.\n\nEste handler existe de proposito: sem ele, o catch-all de Exception capturaria a HttpRequestMethodNotSupportedException e devolveria 500."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 405\", () => pm.response.to.have.status(405));",
+                  "pm.test(\"Corpo de erro padronizado ErroRS\", () => {",
+                  "    const e = pm.response.json();",
+                  "    [\"timestamp\",\"status\",\"error\",\"message\",\"path\"].forEach(k => pm.expect(e).to.have.property(k));",
+                  "});",
+                  "pm.test(\"Nunca vaza stacktrace\", () => {",
+                  "    pm.expect(pm.response.text()).to.not.include(\"at java.\");",
+                  "    pm.expect(pm.response.text()).to.not.include(\"Exception:\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "415 - content type nao suportado",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "text/plain"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "isto nao e json",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/lotes",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "lotes"
+              ]
+            },
+            "description": "Mesma razao do 405: handler dedicado impede que vire 500."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 415\", () => pm.response.to.have.status(415));",
+                  "pm.test(\"Corpo de erro padronizado ErroRS\", () => {",
+                  "    const e = pm.response.json();",
+                  "    [\"timestamp\",\"status\",\"error\",\"message\",\"path\"].forEach(k => pm.expect(e).to.have.property(k));",
+                  "});",
+                  "pm.test(\"Nunca vaza stacktrace\", () => {",
+                  "    pm.expect(pm.response.text()).to.not.include(\"at java.\");",
+                  "    pm.expect(pm.response.text()).to.not.include(\"Exception:\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "422 - tipo de recebivel inexistente",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dsReferencia\": \"Tipo invalido\",\n  \"cedenteDocumento\": \"{{cnpjValido}}\",\n  \"cedenteNome\": \"ACME\",\n  \"vlTaxaBase\": 0.01,\n  \"recebiveis\": [{\"nrTitulo\":\"NP1\",\"vlFace\":1000.00,\"dtVencimento\":\"{{dtVencimentoFutura}}\",\"tipoRecebivel\":\"NOTA_PROMISSORIA\",\"sgMoeda\":\"BRL\",\"sgMoedaPagamento\":\"BRL\"}]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/lotes",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "lotes"
+              ]
+            },
+            "description": "Payload sintaticamente valido que viola regra de negocio - dai 422 e nao 400.\n\nNOTA_PROMISSORIA nao tem Strategy cadastrada. A falha e explicita, nunca NullPointerException."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 422\", () => pm.response.to.have.status(422));",
+                  "pm.test(\"Corpo de erro padronizado ErroRS\", () => {",
+                  "    const e = pm.response.json();",
+                  "    [\"timestamp\",\"status\",\"error\",\"message\",\"path\"].forEach(k => pm.expect(e).to.have.property(k));",
+                  "});",
+                  "pm.test(\"Nunca vaza stacktrace\", () => {",
+                  "    pm.expect(pm.response.text()).to.not.include(\"at java.\");",
+                  "    pm.expect(pm.response.text()).to.not.include(\"Exception:\");",
+                  "});",
+                  "pm.test(\"Mensagem nomeia o tipo rejeitado\", () => {",
+                  "    pm.expect(pm.response.json().message).to.include(\"NOTA_PROMISSORIA\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "422 - rollback do lote inteiro",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dsReferencia\": \"Rollback\",\n  \"cedenteDocumento\": \"{{cnpjValido}}\",\n  \"cedenteNome\": \"ACME\",\n  \"vlTaxaBase\": 0.01,\n  \"recebiveis\": [\n    {\"nrTitulo\":\"OK-1\",\"vlFace\":10000.00,\"dtVencimento\":\"{{dtVencimentoFutura}}\",\"tipoRecebivel\":\"DUPLICATA_MERCANTIL\",\"sgMoeda\":\"BRL\",\"sgMoedaPagamento\":\"BRL\"},\n    {\"nrTitulo\":\"RUIM-1\",\"vlFace\":7000.00,\"dtVencimento\":\"{{dtVencimentoFutura}}\",\"tipoRecebivel\":\"NOTA_PROMISSORIA\",\"sgMoeda\":\"BRL\",\"sgMoedaPagamento\":\"BRL\"}\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/lotes",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "lotes"
+              ]
+            },
+            "description": "O PRIMEIRO item e valido, o SEGUNDO nao.\n\nProva de atomicidade: apos o 422, NENHUM registro pode ter sobrevivido - nem o lote, nem o recebivel OK-1, nem a precificacao dele.\n\nVERIFICACAO MANUAL: SELECT COUNT(*) FROM recebivel WHERE nr_titulo = 'OK-1' deve retornar 0."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 422\", () => pm.response.to.have.status(422));",
+                  "pm.test(\"Corpo de erro padronizado ErroRS\", () => {",
+                  "    const e = pm.response.json();",
+                  "    [\"timestamp\",\"status\",\"error\",\"message\",\"path\"].forEach(k => pm.expect(e).to.have.property(k));",
+                  "});",
+                  "pm.test(\"Nunca vaza stacktrace\", () => {",
+                  "    pm.expect(pm.response.text()).to.not.include(\"at java.\");",
+                  "    pm.expect(pm.response.text()).to.not.include(\"Exception:\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "422 - moeda inexistente",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dsReferencia\": \"Moeda invalida\",\n  \"cedenteDocumento\": \"{{cnpjValido}}\",\n  \"cedenteNome\": \"ACME\",\n  \"vlTaxaBase\": 0.01,\n  \"recebiveis\": [{\"nrTitulo\":\"XY1\",\"vlFace\":1000.00,\"dtVencimento\":\"{{dtVencimentoFutura}}\",\"tipoRecebivel\":\"DUPLICATA_MERCANTIL\",\"sgMoeda\":\"XYZ\",\"sgMoedaPagamento\":\"XYZ\"}]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/lotes",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "lotes"
+              ]
+            },
+            "description": "A moeda XYZ nao existe na tabela de referencia."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 422\", () => pm.response.to.have.status(422));",
+                  "pm.test(\"Corpo de erro padronizado ErroRS\", () => {",
+                  "    const e = pm.response.json();",
+                  "    [\"timestamp\",\"status\",\"error\",\"message\",\"path\"].forEach(k => pm.expect(e).to.have.property(k));",
+                  "});",
+                  "pm.test(\"Nunca vaza stacktrace\", () => {",
+                  "    pm.expect(pm.response.text()).to.not.include(\"at java.\");",
+                  "    pm.expect(pm.response.text()).to.not.include(\"Exception:\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "422 - prazo invalido na simulacao",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"vlFace\": 10000.00,\n  \"dtVencimento\": \"2020-01-01\",\n  \"tipoRecebivel\": \"DUPLICATA_MERCANTIL\",\n  \"sgMoeda\": \"BRL\",\n  \"sgMoedaPagamento\": \"BRL\",\n  \"vlTaxaBase\": 0.01\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/precificacoes/simular",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "precificacoes",
+                "simular"
+              ]
+            },
+            "description": "Vencimento no passado resulta em prazo negativo - nao ha o que descontar."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 422\", () => pm.response.to.have.status(422));",
+                  "pm.test(\"Corpo de erro padronizado ErroRS\", () => {",
+                  "    const e = pm.response.json();",
+                  "    [\"timestamp\",\"status\",\"error\",\"message\",\"path\"].forEach(k => pm.expect(e).to.have.property(k));",
+                  "});",
+                  "pm.test(\"Nunca vaza stacktrace\", () => {",
+                  "    pm.expect(pm.response.text()).to.not.include(\"at java.\");",
+                  "    pm.expect(pm.response.text()).to.not.include(\"Exception:\");",
+                  "});",
+                  "pm.test(\"Mensagem explica o prazo\", () => {",
+                  "    pm.expect(pm.response.json().message.toLowerCase()).to.include(\"prazo\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "422 - cotacao inexistente para o par",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"vlFace\": 10000.00,\n  \"dtVencimento\": \"{{dtVencimentoFutura}}\",\n  \"tipoRecebivel\": \"DUPLICATA_MERCANTIL\",\n  \"sgMoeda\": \"BRL\",\n  \"sgMoedaPagamento\": \"JPY\",\n  \"vlTaxaBase\": 0.01\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/precificacoes/simular",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "precificacoes",
+                "simular"
+              ]
+            },
+            "description": "JPY nao esta cadastrada e nao ha cotacao BRL->JPY.\n\nNo fluxo assincrono de liquidacao, este mesmo erro NAO consome tentativas de retry: por ser ErroDeNegocio, o consumer registra FALHA e confirma a mensagem - retentar nao mudaria o resultado."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 422\", () => pm.response.to.have.status(422));",
+                  "pm.test(\"Corpo de erro padronizado ErroRS\", () => {",
+                  "    const e = pm.response.json();",
+                  "    [\"timestamp\",\"status\",\"error\",\"message\",\"path\"].forEach(k => pm.expect(e).to.have.property(k));",
+                  "});",
+                  "pm.test(\"Nunca vaza stacktrace\", () => {",
+                  "    pm.expect(pm.response.text()).to.not.include(\"at java.\");",
+                  "    pm.expect(pm.response.text()).to.not.include(\"Exception:\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "422 - moeda de liquidacao inexistente",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "TrackId",
+                "value": "{{$guid}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"precificacaoId\": {{precificacaoIdNegativo}},\n  \"sgMoedaLiquidacao\": \"XYZ\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/liquidacoes",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "liquidacoes"
+              ]
+            },
+            "description": "Moeda de liquidacao nao cadastrada. Falha antes de enfileirar.\n\nDEPENDE do 'SETUP - precificacao dedicada aos negativos', primeira requisicao desta pasta. Usar uma precificacao ja liquidada faria o guard 1:1 responder 409 antes de chegar na validacao de moeda."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 422\", () => pm.response.to.have.status(422));",
+                  "pm.test(\"Corpo de erro padronizado ErroRS\", () => {",
+                  "    const e = pm.response.json();",
+                  "    [\"timestamp\",\"status\",\"error\",\"message\",\"path\"].forEach(k => pm.expect(e).to.have.property(k));",
+                  "});",
+                  "pm.test(\"Nunca vaza stacktrace\", () => {",
+                  "    pm.expect(pm.response.text()).to.not.include(\"at java.\");",
+                  "    pm.expect(pm.response.text()).to.not.include(\"Exception:\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Pre-request de colecao: roda antes de TODA requisicao.",
+          "// Calcula datas dinamicas para que a collection nao expire com o tempo.",
+          "",
+          "const hoje = new Date();",
+          "",
+          "// Vencimento sempre 90 dias no futuro - evita 422 de prazo invalido.",
+          "const venc = new Date(hoje);",
+          "venc.setDate(venc.getDate() + 90);",
+          "pm.collectionVariables.set('dtVencimentoFutura', venc.toISOString().slice(0, 10));",
+          "",
+          "// Cotacao: ultimo dia util. A Frankfurter nao publica em fim de semana.",
+          "const cot = new Date(hoje);",
+          "cot.setDate(cot.getDate() - 1);",
+          "while (cot.getDay() === 0 || cot.getDay() === 6) { cot.setDate(cot.getDate() - 1); }",
+          "pm.collectionVariables.set('dataCotacao', cot.toISOString().slice(0, 10));",
+          "",
+          "// Janela do mes corrente, usada nos filtros do extrato.",
+          "const ini = new Date(hoje.getFullYear(), hoje.getMonth(), 1);",
+          "const fim = new Date(hoje.getFullYear(), hoje.getMonth() + 1, 0);",
+          "pm.collectionVariables.set('dataInicioMes', ini.toISOString().slice(0, 10));",
+          "pm.collectionVariables.set('dataFimMes', fim.toISOString().slice(0, 10));"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Test de colecao: roda apos TODA requisicao, somando-se aos testes locais.",
+          "",
+          "pm.test('Tempo de resposta dentro do SLA', () => {",
+          "    const sla = Number(pm.environment.get('slaMs') || 3000);",
+          "    pm.expect(pm.response.responseTime).to.be.below(sla);",
+          "});",
+          "",
+          "pm.test('Nao retorna 5xx inesperado', () => {",
+          "    pm.expect(pm.response.code).to.be.below(500);",
+          "});",
+          "",
+          "if (pm.response.code !== 204 && pm.response.text() && pm.response.text().trim().startsWith('{')) {",
+          "    pm.test('Content-Type e application/json', () => {",
+          "        pm.expect(pm.response.headers.get('Content-Type')).to.include('application/json');",
+          "    });",
+          "}"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "{{host}}",
+      "type": "string",
+      "description": "Raiz da API, derivada de host."
+    },
+    {
+      "key": "cnpjValido",
+      "value": "11222333000181",
+      "type": "string",
+      "description": "CNPJ com DV valido."
+    },
+    {
+      "key": "cnpjValidoSecundario",
+      "value": "98765432000198",
+      "type": "string",
+      "description": "Segundo cedente."
+    },
+    {
+      "key": "precificacaoId",
+      "value": "",
+      "type": "string",
+      "description": "Encadeada de 02."
+    },
+    {
+      "key": "liquidacaoId",
+      "value": "",
+      "type": "string",
+      "description": "Encadeada de 04."
+    },
+    {
+      "key": "trackId",
+      "value": "",
+      "type": "string",
+      "description": "Gerada no pre-request de 04."
+    },
+    {
+      "key": "trackIdUsado",
+      "value": "",
+      "type": "string",
+      "description": "Preservada para o replay."
+    },
+    {
+      "key": "tentativasPolling",
+      "value": "0",
+      "type": "string",
+      "description": "Contador do polling."
+    },
+    {
+      "key": "precificacaoIdNegativo",
+      "value": "",
+      "type": "string",
+      "description": "Precificacao nao liquidada, criada pelo setup da pasta 06."
+    }
+  ]
+}
