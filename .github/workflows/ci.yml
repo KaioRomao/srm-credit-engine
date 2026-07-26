@@ -1,0 +1,173 @@
+name: CI
+
+on:
+  push:
+    branches: [development, main]
+  pull_request:
+    branches: [development, main]
+
+env:
+  JAVA_VERSION: '17'
+  JAVA_DISTRIBUTION: temurin
+
+jobs:
+  build-and-lint:
+    name: Build e Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          cache: maven
+
+      - name: Verificar formatacao (Spotless)
+        run: ./mvnw -B spotless:check
+
+      - name: Compilar
+        run: ./mvnw -B compile
+
+  unit-tests:
+    name: Testes Unitarios
+    runs-on: ubuntu-latest
+    needs: build-and-lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          cache: maven
+
+      # Surefire roda apenas *Test.java. Os *IT.java ficam para o job seguinte,
+      # que tem MySQL e RabbitMQ disponiveis.
+      - name: Rodar testes unitarios
+        run: ./mvnw -B test
+
+      - name: Publicar relatorio do Surefire
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports
+          path: target/surefire-reports/
+          retention-days: 7
+
+  integration-tests:
+    name: Testes de Integracao
+    runs-on: ubuntu-latest
+    needs: unit-tests
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: srm_credit_engine
+          MYSQL_USER: srm
+          MYSQL_PASSWORD: srm
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -u root -proot --silent"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+          --health-start-period=30s
+
+      rabbitmq:
+        image: rabbitmq:3-management
+        env:
+          RABBITMQ_DEFAULT_USER: guest
+          RABBITMQ_DEFAULT_PASS: guest
+        ports:
+          - 5672:5672
+          - 15672:15672
+        options: >-
+          --health-cmd="rabbitmq-diagnostics -q ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+          --health-start-period=20s
+
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: 3306
+      DB_NAME: srm_credit_engine
+      DB_USER: srm
+      DB_PASSWORD: srm
+      RABBITMQ_HOST: 127.0.0.1
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: guest
+      RABBITMQ_PASSWORD: guest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          cache: maven
+
+      # As migrations Flyway usam sintaxe MySQL (ENGINE=InnoDB, DELETE ... JOIN) e o
+      # ExtratoRepository usa SQL nativo com LIMIT. Trocar por H2 validaria uma traducao,
+      # nao a query que roda em producao.
+      - name: Rodar suite completa com cobertura
+        run: ./mvnw -B verify
+
+      - name: Publicar relatorio JaCoCo
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-report
+          path: target/site/jacoco/
+          retention-days: 7
+
+      - name: Publicar relatorio do Failsafe
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failsafe-reports
+          path: target/failsafe-reports/
+          retention-days: 7
+
+      - name: Resumo da cobertura
+        if: always()
+        run: |
+          if [ -f target/site/jacoco/jacoco.csv ]; then
+            python3 - <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          import csv
+          linhas = list(csv.DictReader(open('target/site/jacoco/jacoco.csv')))
+          total = {c: 0 for c in ('IM', 'IC', 'BM', 'BC')}
+          for l in linhas:
+              total['IM'] += int(l['INSTRUCTION_MISSED'])
+              total['IC'] += int(l['INSTRUCTION_COVERED'])
+              total['BM'] += int(l['BRANCH_MISSED'])
+              total['BC'] += int(l['BRANCH_COVERED'])
+          pct = lambda c, m: 100.0 * c / (c + m) if c + m else 100.0
+          print('## Cobertura de testes\n')
+          print('| Metrica | Cobertura |')
+          print('|---|---|')
+          print(f"| Instrucoes | {pct(total['IC'], total['IM']):.1f}% |")
+          print(f"| Branches | {pct(total['BC'], total['BM']):.1f}% |")
+          EOF
+          fi
+
+  docker-build:
+    name: Build da Imagem Docker
+    runs-on: ubuntu-latest
+    needs: integration-tests
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      # Nao publica em registry: o objetivo e garantir que o build multi-stage
+      # (maven -> jre) continua funcionando.
+      - name: Validar build multi-stage
+        run: docker build -t srm-credit-engine:ci .
