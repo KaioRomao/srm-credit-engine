@@ -4,17 +4,22 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.OptimisticLockingFailureException;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.resilience.annotation.Retryable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import br.com.srm.credit.engine.dto.message.LiquidacaoMensagem;
+import br.com.srm.credit.engine.dto.rq.LiquidacaoFiltroRQ;
 import br.com.srm.credit.engine.dto.rq.LiquidacaoRQ;
 import br.com.srm.credit.engine.dto.rs.LiquidacaoRS;
 import br.com.srm.credit.engine.entity.Liquidacao;
@@ -24,6 +29,7 @@ import br.com.srm.credit.engine.enums.StatusLiquidacao;
 import br.com.srm.credit.engine.exception.CambioException;
 import br.com.srm.credit.engine.exception.ConflitoNegocioException;
 import br.com.srm.credit.engine.exception.ErroDeNegocio;
+import br.com.srm.credit.engine.exception.FiltroInvalidoException;
 import br.com.srm.credit.engine.exception.LiquidacaoException;
 import br.com.srm.credit.engine.exception.RecursoNaoEncontradoException;
 import br.com.srm.credit.engine.mapper.LiquidacaoMapper;
@@ -42,6 +48,9 @@ public class LiquidacaoServiceImpl implements LiquidacaoService {
     private static final Logger log = LoggerFactory.getLogger(LiquidacaoServiceImpl.class);
 
     private static final int TAMANHO_MAX_OBSERVACAO = 500;
+    private static final int TAMANHO_MAX_PAGINA = 100;
+    private static final Set<String> CAMPOS_ORDENACAO =
+            Set.of("id", "trackId", "status", "vlLiquidado", "dtCriacao", "dtLiquidacao");
     private static final String MENSAGEM_FALHA_INESPERADA =
             "Falha inesperada no processamento. Acione o suporte informando o trackId.";
 
@@ -86,6 +95,14 @@ public class LiquidacaoServiceImpl implements LiquidacaoService {
     @Transactional(readOnly = true)
     public LiquidacaoRS consultaLiquidacao(Long liquidacaoId) {
         return liquidacaoMapper.toLiquidacaoRS(buscar(liquidacaoId));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Page<LiquidacaoRS> listaLiquidacoes(LiquidacaoFiltroRQ filtro, Pageable pageable) {
+        return liquidacaoRepository
+                .buscarPorFiltro(filtro.id(), filtro.trackId(), filtro.status(), validarPaginacao(pageable))
+                .map(liquidacaoMapper::toLiquidacaoRS);
     }
 
     @Retryable(
@@ -194,6 +211,20 @@ public class LiquidacaoServiceImpl implements LiquidacaoService {
         liquidacao.setStatus(StatusLiquidacao.PENDENTE);
         liquidacao.setDtCriacao(LocalDateTime.now());
         return liquidacaoRepository.save(liquidacao);
+    }
+
+    private Pageable validarPaginacao(Pageable pageable) {
+        pageable.getSort().forEach(ordem -> {
+            if (!CAMPOS_ORDENACAO.contains(ordem.getProperty())) {
+                throw new FiltroInvalidoException("Ordenação não suportada: '" + ordem.getProperty()
+                        + "'. Campos permitidos: "
+                        + CAMPOS_ORDENACAO.stream().sorted().toList());
+            }
+        });
+        if (pageable.getPageSize() <= TAMANHO_MAX_PAGINA) {
+            return pageable;
+        }
+        return PageRequest.of(pageable.getPageNumber(), TAMANHO_MAX_PAGINA, pageable.getSort());
     }
 
     private Liquidacao buscar(Long liquidacaoId) {

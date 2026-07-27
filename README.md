@@ -270,6 +270,7 @@ graph TB
 | `GET` | `/api/v1/cambios` | `200` | Última cotação do par, com taxa inversa |
 | `POST` | `/api/v1/lotes` | `201` | Intake: cedente + recebíveis + precificações |
 | `POST` | `/api/v1/liquidacoes` | `202` | Enfileira liquidação (idempotente por `TrackId`) |
+| `GET` | `/api/v1/liquidacoes` | `200` | Lista paginada de liquidações, com filtros por `id`, `trackId` e `status` |
 | `GET` | `/api/v1/liquidacoes/{id}` | `200` | Estado atual da liquidação |
 | `GET` | `/api/v1/liquidacoes/extrato` | `200` | Extrato paginado com filtros |
 

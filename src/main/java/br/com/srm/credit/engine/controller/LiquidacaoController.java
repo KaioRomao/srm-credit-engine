@@ -4,8 +4,13 @@ import java.util.UUID;
 
 import jakarta.validation.Valid;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.web.PageableDefault;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -14,6 +19,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
+import br.com.srm.credit.engine.dto.rq.LiquidacaoFiltroRQ;
 import br.com.srm.credit.engine.dto.rq.LiquidacaoRQ;
 import br.com.srm.credit.engine.dto.rs.ErroRS;
 import br.com.srm.credit.engine.dto.rs.LiquidacaoRS;
@@ -72,6 +78,30 @@ public class LiquidacaoController {
                     String trackId,
             @Valid @RequestBody LiquidacaoRQ liquidacaoRQ) {
         return liquidacaoService.iniciaLiquidacao(UUID.fromString(trackId), liquidacaoRQ);
+    }
+
+    @GetMapping
+    @Operation(
+            summary = "Lista as liquidações com filtros e paginação",
+            description =
+                    """
+                    Lista liquidações de qualquer status, com paginação server-side e size limitado a 100. \
+                    Filtros opcionais e combináveis: id, trackId e status.
+
+                    A ordenação aceita apenas dtCriacao, dtLiquidacao, id, status, trackId e vlLiquidado \
+                    (padrão dtCriacao,desc); outro campo retorna 400.""")
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Página de liquidações (vazia se nada casar com os filtros)"),
+        @ApiResponse(
+                responseCode = "400",
+                description = "Filtro inválido (id não numérico, trackId que não é UUID, status inexistente) "
+                        + "ou campo de ordenação não suportado",
+                content = @Content(schema = @Schema(implementation = ErroRS.class)))
+    })
+    public Page<LiquidacaoRS> listar(
+            @Valid @ModelAttribute LiquidacaoFiltroRQ filtro,
+            @PageableDefault(size = 20, sort = "dtCriacao", direction = Sort.Direction.DESC) Pageable pageable) {
+        return liquidacaoService.listaLiquidacoes(filtro, pageable);
     }
 
     @GetMapping("/{id}")

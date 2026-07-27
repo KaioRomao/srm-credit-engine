@@ -2,7 +2,9 @@ package br.com.srm.credit.engine.controller;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -10,6 +12,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 
 import org.junit.jupiter.api.DisplayName;
@@ -17,13 +20,19 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
+import br.com.srm.credit.engine.dto.rq.LiquidacaoFiltroRQ;
 import br.com.srm.credit.engine.dto.rs.LiquidacaoRS;
+import br.com.srm.credit.engine.enums.StatusLiquidacao;
 import br.com.srm.credit.engine.exception.CambioException;
 import br.com.srm.credit.engine.exception.ConflitoNegocioException;
+import br.com.srm.credit.engine.exception.FiltroInvalidoException;
 import br.com.srm.credit.engine.exception.GlobalExceptionHandler;
 import br.com.srm.credit.engine.exception.LiquidacaoException;
 import br.com.srm.credit.engine.exception.RecursoNaoEncontradoException;
@@ -219,7 +228,76 @@ class LiquidacaoControllerTest {
     @Test
     @DisplayName("deve retornar 405 quando usa método não suportado na rota")
     void deveRetornar405QuandoUsaMetodoNaoSuportadoNaRota() throws Exception {
-        mockMvc.perform(get(ROTA)).andExpect(status().isMethodNotAllowed());
+        mockMvc.perform(delete(ROTA)).andExpect(status().isMethodNotAllowed());
+    }
+
+    @Test
+    @DisplayName("deve retornar 200 com a página de liquidações quando lista")
+    void deveRetornar200ComPaginaDeLiquidacoesQuandoLista() throws Exception {
+        when(liquidacaoService.listaLiquidacoes(any(LiquidacaoFiltroRQ.class), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(liquidada(), pendente()), PageRequest.of(0, 20), 2));
+
+        mockMvc.perform(get(ROTA))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content.length()").value(2))
+                .andExpect(jsonPath("$.content[0].status").value("LIQUIDADA"))
+                .andExpect(jsonPath("$.content[1].status").value("PENDENTE"))
+                .andExpect(jsonPath("$.totalElements").value(2));
+    }
+
+    @Test
+    @DisplayName("deve retornar 200 com página vazia quando não há liquidações")
+    void deveRetornar200ComPaginaVaziaQuandoNaoHaLiquidacoes() throws Exception {
+        when(liquidacaoService.listaLiquidacoes(any(LiquidacaoFiltroRQ.class), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(), PageRequest.of(0, 20), 0));
+
+        mockMvc.perform(get(ROTA))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content").isEmpty())
+                .andExpect(jsonPath("$.totalElements").value(0));
+    }
+
+    @Test
+    @DisplayName("deve repassar os filtros de id, trackId e status para o service")
+    void deveRepassarFiltrosDeIdTrackIdEStatusParaOService() throws Exception {
+        when(liquidacaoService.listaLiquidacoes(any(LiquidacaoFiltroRQ.class), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(liquidada()), PageRequest.of(0, 20), 1));
+
+        mockMvc.perform(get(ROTA).param("id", "1").param("trackId", TRACK_ID).param("status", "LIQUIDADA"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totalElements").value(1));
+
+        verify(liquidacaoService)
+                .listaLiquidacoes(
+                        eq(new LiquidacaoFiltroRQ(1L, UUID.fromString(TRACK_ID), StatusLiquidacao.LIQUIDADA)),
+                        any(Pageable.class));
+    }
+
+    @Test
+    @DisplayName("deve retornar 400 quando o trackId do filtro não é um UUID")
+    void deveRetornar400QuandoTrackIdDoFiltroNaoEhUuid() throws Exception {
+        mockMvc.perform(get(ROTA).param("trackId", "nao-e-uuid"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.erros[0].campo").value("trackId"));
+    }
+
+    @Test
+    @DisplayName("deve retornar 400 quando o status do filtro não existe")
+    void deveRetornar400QuandoStatusDoFiltroNaoExiste() throws Exception {
+        mockMvc.perform(get(ROTA).param("status", "INEXISTENTE"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.erros[0].campo").value("status"));
+    }
+
+    @Test
+    @DisplayName("deve retornar 400 quando a ordenação da listagem não é suportada")
+    void deveRetornar400QuandoOrdenacaoDaListagemNaoEhSuportada() throws Exception {
+        when(liquidacaoService.listaLiquidacoes(any(LiquidacaoFiltroRQ.class), any(Pageable.class)))
+                .thenThrow(new FiltroInvalidoException("Ordenação não suportada: 'foo'"));
+
+        mockMvc.perform(get(ROTA).param("sort", "foo,asc"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("Ordenação não suportada: 'foo'"));
     }
 
     private static LiquidacaoRS pendente() {

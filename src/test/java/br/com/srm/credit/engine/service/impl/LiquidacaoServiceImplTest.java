@@ -11,6 +11,7 @@ import static org.mockito.Mockito.when;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -26,8 +27,14 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 
 import br.com.srm.credit.engine.dto.message.LiquidacaoMensagem;
+import br.com.srm.credit.engine.dto.rq.LiquidacaoFiltroRQ;
 import br.com.srm.credit.engine.dto.rq.LiquidacaoRQ;
 import br.com.srm.credit.engine.dto.rs.LiquidacaoRS;
 import br.com.srm.credit.engine.entity.Cedente;
@@ -38,6 +45,7 @@ import br.com.srm.credit.engine.entity.Recebivel;
 import br.com.srm.credit.engine.enums.StatusLiquidacao;
 import br.com.srm.credit.engine.exception.CambioException;
 import br.com.srm.credit.engine.exception.ConflitoNegocioException;
+import br.com.srm.credit.engine.exception.FiltroInvalidoException;
 import br.com.srm.credit.engine.exception.LiquidacaoException;
 import br.com.srm.credit.engine.exception.RecursoNaoEncontradoException;
 import br.com.srm.credit.engine.mapper.LiquidacaoMapper;
@@ -418,6 +426,83 @@ class LiquidacaoServiceImplTest {
 
             assertThatThrownBy(() -> liquidacaoService.consultaLiquidacao(404L))
                     .isInstanceOf(RecursoNaoEncontradoException.class);
+        }
+    }
+
+    @Nested
+    @DisplayName("listaLiquidacoes")
+    class ListaLiquidacoes {
+
+        private static final LiquidacaoFiltroRQ SEM_FILTRO = new LiquidacaoFiltroRQ(null, null, null);
+
+        @Test
+        @DisplayName("deve devolver a página mapeada quando existem liquidações")
+        void deveDevolverPaginaMapeadaQuandoExistemLiquidacoes() {
+            Pageable paginacao = PageRequest.of(0, 20, Sort.by(Sort.Direction.DESC, "dtCriacao"));
+            Liquidacao liquidada = liquidacao(StatusLiquidacao.LIQUIDADA);
+            liquidada.setVlLiquidado(new BigDecimal("7447.1616"));
+            when(liquidacaoRepository.buscarPorFiltro(null, null, null, paginacao))
+                    .thenReturn(
+                            new PageImpl<>(List.of(liquidada, liquidacao(StatusLiquidacao.PENDENTE)), paginacao, 2));
+
+            Page<LiquidacaoRS> resposta = liquidacaoService.listaLiquidacoes(SEM_FILTRO, paginacao);
+
+            assertThat(resposta.getTotalElements()).isEqualTo(2);
+            assertThat(resposta.getContent().get(0).status()).isEqualTo("LIQUIDADA");
+            assertThat(resposta.getContent().get(0).vlLiquidado()).isEqualByComparingTo("7447.1616");
+            assertThat(resposta.getContent().get(1).status()).isEqualTo("PENDENTE");
+        }
+
+        @Test
+        @DisplayName("deve devolver página vazia quando não existem liquidações")
+        void deveDevolverPaginaVaziaQuandoNaoExistemLiquidacoes() {
+            Pageable paginacao = PageRequest.of(0, 20);
+            when(liquidacaoRepository.buscarPorFiltro(null, null, null, paginacao))
+                    .thenReturn(new PageImpl<>(List.of(), paginacao, 0));
+
+            Page<LiquidacaoRS> resposta = liquidacaoService.listaLiquidacoes(SEM_FILTRO, paginacao);
+
+            assertThat(resposta.getContent()).isEmpty();
+            assertThat(resposta.getTotalElements()).isZero();
+        }
+
+        @Test
+        @DisplayName("deve repassar id, trackId e status do filtro para o repositório")
+        void deveRepassarIdTrackIdEStatusDoFiltroParaORepositorio() {
+            Pageable paginacao = PageRequest.of(0, 20);
+            LiquidacaoFiltroRQ filtro = new LiquidacaoFiltroRQ(LIQUIDACAO_ID, TRACK_ID, StatusLiquidacao.LIQUIDADA);
+            when(liquidacaoRepository.buscarPorFiltro(LIQUIDACAO_ID, TRACK_ID, StatusLiquidacao.LIQUIDADA, paginacao))
+                    .thenReturn(new PageImpl<>(List.of(liquidacao(StatusLiquidacao.LIQUIDADA)), paginacao, 1));
+
+            Page<LiquidacaoRS> resposta = liquidacaoService.listaLiquidacoes(filtro, paginacao);
+
+            assertThat(resposta.getTotalElements()).isEqualTo(1);
+            verify(liquidacaoRepository)
+                    .buscarPorFiltro(LIQUIDACAO_ID, TRACK_ID, StatusLiquidacao.LIQUIDADA, paginacao);
+        }
+
+        @Test
+        @DisplayName("deve limitar o tamanho da página em 100 quando pedem mais")
+        void deveLimitarTamanhoDaPaginaEm100QuandoPedemMais() {
+            Pageable limitada = PageRequest.of(0, 100);
+            when(liquidacaoRepository.buscarPorFiltro(null, null, null, limitada))
+                    .thenReturn(new PageImpl<>(List.of(), limitada, 0));
+
+            liquidacaoService.listaLiquidacoes(SEM_FILTRO, PageRequest.of(0, 500));
+
+            verify(liquidacaoRepository).buscarPorFiltro(null, null, null, limitada);
+        }
+
+        @Test
+        @DisplayName("deve lançar FiltroInvalidoException quando a ordenação não é suportada")
+        void deveLancarFiltroInvalidoQuandoOrdenacaoNaoEhSuportada() {
+            Pageable paginacao = PageRequest.of(0, 20, Sort.by("version"));
+
+            assertThatThrownBy(() -> liquidacaoService.listaLiquidacoes(SEM_FILTRO, paginacao))
+                    .isInstanceOf(FiltroInvalidoException.class)
+                    .hasMessageContaining("version");
+
+            verifyNoInteractions(liquidacaoRepository);
         }
     }
 
