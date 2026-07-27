@@ -1,6 +1,6 @@
 # Collection Postman — SRM Credit Engine
 
-**43 requisições · 7 pastas · 3 environments · 409 linhas de script**
+**50 requisições · 7 pastas · 3 environments · 482 linhas de script**
 
 Todas as requisições foram executadas contra a aplicação real antes de serem publicadas aqui.
 
@@ -33,9 +33,9 @@ Importe a collection e o environment **SRM - Local** no Postman, selecione o env
 | 2 | `01 - Cambio` | 4 | Sincroniza cotação — **pré-requisito** do cross-currency |
 | 3 | `02 - Lote` | 3 | Cria recebíveis e precificações; publica `precificacaoId` |
 | 4 | `03 - Precificacao` | 3 | Simulações independentes, sem efeito colateral |
-| 5 | `04 - Liquidacao` | 4 | Consome `precificacaoId`; faz polling do desfecho |
+| 5 | `04 - Liquidacao` | 8 | Consome `precificacaoId`; faz polling do desfecho e lista com filtros |
 | 6 | `05 - Extrato` | 5 | Consulta o que foi liquidado nos passos anteriores |
-| 7 | `06 - Cenarios Negativos` | 22 | Contrato de erro; roda isolado, tem setup próprio |
+| 7 | `06 - Cenarios Negativos` | 25 | Contrato de erro; roda isolado, tem setup próprio |
 
 Rodar fora de ordem quebra o encadeamento: `04` sem `02` não tem `precificacaoId`; `02` cross-currency sem `01` retorna 422.
 
@@ -152,12 +152,18 @@ Fórmula: `VP = VF / (1 + TaxaBase + Spread) ^ (dias / 30)`.
 | Replay — mesmo TrackId | `POST` | idem | `202` | — |
 | Consultar desfecho | `GET` | `/api/v1/liquidacoes/{id}` | `200` | `400`, `404` |
 | Guard 1:1 | `POST` | `/api/v1/liquidacoes` | `409` | — |
+| Listar — sem filtros | `GET` | `/api/v1/liquidacoes` | `200` | `400` |
+| Listar — filtro por id | `GET` | idem | `200` | — |
+| Listar — filtro por trackId | `GET` | idem | `200` | — |
+| Listar — filtro por status | `GET` | idem | `200` | — |
 
 **Header `TrackId`** (obrigatório): UUID de idempotência. O pre-request gera um novo a cada execução; para testar replay, o valor é preservado em `trackIdUsado`.
 
 **O `202` não traz o resultado.** `vlLiquidado`, `vlCambioAplicado` e `dtLiquidacao` vêm **nulos** — são preenchidos pelo consumidor depois. A requisição "Consultar desfecho" implementa **polling automático**: se o status ainda é `PENDENTE` ou `PROCESSANDO`, reagenda a si mesma até 10 vezes usando `postman.setNextRequest`.
 
 **Estados:** `PENDENTE` → `PROCESSANDO` → `LIQUIDADA` | `FALHA`. Em `FALHA`, o motivo vem em `dsObservacao`.
+
+**Listagem.** Diferente do extrato, `GET /liquidacoes` traz liquidações de **qualquer status**. Filtros opcionais e combináveis: `id` (Long), `trackId` (UUID) e `status` (enum da máquina de estados) — valor fora do tipo → `400` apontando o campo. Paginação com `size` limitado a 100 e `sort` com whitelist própria (`dtCriacao`, `dtLiquidacao`, `id`, `status`, `trackId`, `vlLiquidado`; padrão `dtCriacao,desc`). Filtro por `id` inexistente devolve página **vazia** (`200`), não `404` — quem quer `404` usa `GET /liquidacoes/{id}`.
 
 > **Não existem** os endpoints de cancelamento nem de histórico. O estado `CANCELADA` existe na máquina de estados e é respeitado pelo consumidor, mas **nenhum endpoint o produz**.
 
@@ -192,11 +198,11 @@ Campos permitidos em `sort`: `dtLiquidacao`, `vlLiquidado`, `vlFace`, `dtVencime
 
 ### `06 - Cenarios Negativos`
 
-22 requisições que **devem falhar**, cada uma com status específico. Todas verificam o corpo padronizado `ErroRS` e a **ausência de stacktrace**.
+25 requisições que **devem falhar**, cada uma com status específico. Todas verificam o corpo padronizado `ErroRS` e a **ausência de stacktrace**.
 
 | Status | Cenários |
 |---|---|
-| `400` | lista vazia · CNPJ com DV inválido · campo aninhado com path indexado · JSON malformado · TrackId não-UUID · TrackId ausente · data fora do ISO · período invertido · sort fora da whitelist · SQL injection no sort · id não numérico |
+| `400` | lista vazia · CNPJ com DV inválido · campo aninhado com path indexado · JSON malformado · TrackId não-UUID · TrackId ausente · data fora do ISO · período invertido · sort fora da whitelist · SQL injection no sort · trackId de filtro não-UUID · status de filtro inexistente · sort fora da whitelist na listagem · id não numérico |
 | `404` | precificação inexistente · liquidação inexistente |
 | `405` | método não suportado |
 | `415` | content-type não suportado |
@@ -281,15 +287,18 @@ Ver [`../TESTES.md`](../TESTES.md) para a suíte automatizada — 208 testes, 97
 
 ## Validação executada
 
-Todas as 43 requisições foram executadas contra a aplicação real antes da publicação:
+Todas as 50 requisições foram executadas contra a aplicação real antes da publicação — última rodada completa via `newman`, com 293 assertions e zero falhas:
 
 | Grupo | Resultado |
 |---|---|
-| Caminho feliz (`00`–`05`) | 16/16 com o status esperado |
-| Cenários negativos (`06`) | 21/21 com o status esperado |
+| Caminho feliz (`00`–`05`) | 25/25 com o status esperado |
+| Cenários negativos (`06`) | 25/25 com o status esperado |
 | Idempotência do câmbio | Mesmo `id` em duas sincronizações |
 | Replay de liquidação | Mesmo `id`, sem duplicar |
+| Filtros da listagem | `id`, `trackId` e `status` devolvendo só o item esperado |
 | Teto de paginação | `size=5000` → `size=100` |
 | Rollback do lote | Zero vestígio após falha no segundo item |
 
-> Um defeito foi encontrado e corrigido durante essa validação: o cenário "422 — moeda de liquidação inexistente" retornava `409`, porque reutilizava a precificação já liquidada pela pasta `04`. A ordem dos guards em `iniciaLiquidacao` é: replay → precificação existe → já liquidada → valor líquido → moeda. Corrigido com o setup dedicado.
+> Um defeito foi encontrado e corrigido durante a primeira validação: o cenário "422 — moeda de liquidação inexistente" retornava `409`, porque reutilizava a precificação já liquidada pela pasta `04`. A ordem dos guards em `iniciaLiquidacao` é: replay → precificação existe → já liquidada → valor líquido → moeda. Corrigido com o setup dedicado.
+
+> Na rodada que validou a listagem, outro defeito foi encontrado e corrigido na própria collection: o corpo de "Criar lote — duplicata e cheque no mesmo lote" tinha uma chave `}` sobrando, virando JSON malformado e derrubando o `201` esperado para `400`.

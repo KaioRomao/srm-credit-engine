@@ -365,7 +365,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"dsReferencia\": \"Lote {{$timestamp}}\",\n  \"cedenteDocumento\": \"{{cnpjValido}}\",\n  \"cedenteNome\": \"ACME LTDA\",\n  \"vlTaxaBase\": 0.01,\n  \"recebiveis\": [\n    {\n      \"nrTitulo\": \"DUP-{{$randomInt}}\",\n      \"vlFace\": 10000.00,\n      \"dtVencimento\": \"{{dtVencimentoFutura}}\",\n      \"tipoRecebivel\": \"DUPLICATA_MERCANTIL\",\n      \"sgMoeda\": \"BRL\",\n      \"sgMoedaPagamento\": \"BRL\"\n    }\n    },\n    {\n      \"nrTitulo\": \"CHQ-{{$randomInt}}\",\n      \"vlFace\": 10000.00,\n      \"dtVencimento\": \"{{dtVencimentoFutura}}\",\n      \"tipoRecebivel\": \"CHEQUE_PRE_DATADO\",\n      \"sgMoeda\": \"BRL\",\n      \"sgMoedaPagamento\": \"BRL\"\n    }\n  ]\n}",
+              "raw": "{\n  \"dsReferencia\": \"Lote {{$timestamp}}\",\n  \"cedenteDocumento\": \"{{cnpjValido}}\",\n  \"cedenteNome\": \"ACME LTDA\",\n  \"vlTaxaBase\": 0.01,\n  \"recebiveis\": [\n    {\n      \"nrTitulo\": \"DUP-{{$randomInt}}\",\n      \"vlFace\": 10000.00,\n      \"dtVencimento\": \"{{dtVencimentoFutura}}\",\n      \"tipoRecebivel\": \"DUPLICATA_MERCANTIL\",\n      \"sgMoeda\": \"BRL\",\n      \"sgMoedaPagamento\": \"BRL\"\n    },\n    {\n      \"nrTitulo\": \"CHQ-{{$randomInt}}\",\n      \"vlFace\": 10000.00,\n      \"dtVencimento\": \"{{dtVencimentoFutura}}\",\n      \"tipoRecebivel\": \"CHEQUE_PRE_DATADO\",\n      \"sgMoeda\": \"BRL\",\n      \"sgMoedaPagamento\": \"BRL\"\n    }\n  ]\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -862,6 +862,182 @@
                   "pm.test(\"Status 409\", () => pm.response.to.have.status(409));",
                   "pm.test(\"Mensagem indica que ja foi liquidada\", () => {",
                   "    pm.expect(pm.response.json().message).to.include(\"liquidada\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Listar liquidacoes - sem filtros",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/liquidacoes?page=0&size=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "liquidacoes"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "0"
+                },
+                {
+                  "key": "size",
+                  "value": "20"
+                }
+              ]
+            },
+            "description": "Lista liquidacoes de QUALQUER status (diferente do extrato, que so traz LIQUIDADA).\n\nPAGINACAO\n- page: base zero.\n- size: limitado a 100. Valor maior e reduzido SILENCIOSAMENTE, sem erro.\n- sort: padrao dtCriacao,desc. Whitelist: dtCriacao, dtLiquidacao, id, status, trackId e vlLiquidado."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Estrutura de Page do Spring Data\", () => {",
+                  "    const p = pm.response.json();",
+                  "    [\"content\",\"totalElements\",\"totalPages\",\"size\",\"number\",\"first\",\"last\"]",
+                  "        .forEach(k => pm.expect(p).to.have.property(k));",
+                  "});",
+                  "pm.test(\"Traz a liquidacao criada na pasta 04\", () => {",
+                  "    const ids = pm.response.json().content.map(l => l.id);",
+                  "    pm.expect(ids).to.include(Number(pm.collectionVariables.get(\"liquidacaoId\")));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Listar - filtro por id",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/liquidacoes?id={{liquidacaoId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "liquidacoes"
+              ],
+              "query": [
+                {
+                  "key": "id",
+                  "value": "{{liquidacaoId}}"
+                }
+              ]
+            },
+            "description": "Filtro exato pelo id devolvido no POST.\n\nDiferenca para GET /liquidacoes/{id}: aqui um id inexistente devolve pagina VAZIA (200), nao 404."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Exatamente uma liquidacao\", () => {",
+                  "    pm.expect(pm.response.json().totalElements).to.eql(1);",
+                  "});",
+                  "pm.test(\"Id confere com o filtrado\", () => {",
+                  "    pm.expect(pm.response.json().content[0].id).to.eql(Number(pm.collectionVariables.get(\"liquidacaoId\")));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Listar - filtro por trackId",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/liquidacoes?trackId={{trackIdUsado}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "liquidacoes"
+              ],
+              "query": [
+                {
+                  "key": "trackId",
+                  "value": "{{trackIdUsado}}"
+                }
+              ]
+            },
+            "description": "Localiza a liquidacao pela chave de idempotencia usada no POST.\n\nComo trackId e UNICO, a pagina tem no maximo um item."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Exatamente uma liquidacao\", () => {",
+                  "    pm.expect(pm.response.json().totalElements).to.eql(1);",
+                  "});",
+                  "pm.test(\"TrackId confere com o filtrado\", () => {",
+                  "    pm.expect(pm.response.json().content[0].trackId).to.eql(pm.collectionVariables.get(\"trackIdUsado\"));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Listar - filtro por status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/liquidacoes?status=LIQUIDADA&sort=dtLiquidacao,desc",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "liquidacoes"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "LIQUIDADA"
+                },
+                {
+                  "key": "sort",
+                  "value": "dtLiquidacao,desc"
+                }
+              ]
+            },
+            "description": "Filtra por status da maquina de estados: PENDENTE, PROCESSANDO, LIQUIDADA, FALHA ou CANCELADA.\n\nCombinavel com os demais filtros e com a ordenacao da whitelist."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Todos os itens com o status filtrado\", () => {",
+                  "    pm.response.json().content.forEach(l => pm.expect(l.status).to.eql(\"LIQUIDADA\"));",
                   "});"
                 ]
               }
@@ -1668,6 +1844,126 @@
                   "pm.test(\"Nunca vaza stacktrace\", () => {",
                   "    pm.expect(pm.response.text()).to.not.include(\"at java.\");",
                   "    pm.expect(pm.response.text()).to.not.include(\"Exception:\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "400 - trackId de filtro fora do formato UUID na listagem",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/liquidacoes?trackId=nao-e-uuid",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "liquidacoes"
+              ],
+              "query": [
+                {
+                  "key": "trackId",
+                  "value": "nao-e-uuid"
+                }
+              ]
+            },
+            "description": "O filtro trackId e tipado como UUID: valor fora do formato falha no binding, antes de chegar ao banco."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"Aponta o campo trackId\", () => {",
+                  "    pm.expect(pm.response.json().erros[0].campo).to.eql(\"trackId\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "400 - status de filtro inexistente na listagem",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/liquidacoes?status=INEXISTENTE",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "liquidacoes"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "INEXISTENTE"
+                }
+              ]
+            },
+            "description": "O filtro status e tipado como enum StatusLiquidacao: valor fora da maquina de estados falha no binding."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"Aponta o campo status\", () => {",
+                  "    pm.expect(pm.response.json().erros[0].campo).to.eql(\"status\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "400 - ordenacao fora da whitelist na listagem",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/liquidacoes?sort=dsObservacao,asc",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "liquidacoes"
+              ],
+              "query": [
+                {
+                  "key": "sort",
+                  "value": "dsObservacao,asc"
+                }
+              ]
+            },
+            "description": "Mesma protecao do extrato, aplicada a listagem: so dtCriacao, dtLiquidacao, id, status, trackId e vlLiquidado ordenam."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"Mensagem lista os campos permitidos\", () => {",
+                  "    pm.expect(pm.response.json().message).to.include(\"dtCriacao\");",
+                  "});",
+                  "pm.test(\"Nunca vaza stacktrace\", () => {",
+                  "    pm.expect(pm.response.text()).to.not.include(\"at java.\");",
                   "});"
                 ]
               }
